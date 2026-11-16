@@ -86,7 +86,6 @@ impl MasterClock {
         if self.start_time.is_none() {
             self.start_time = Some(Instant::now());
             self.manual_offset_secs = frame_pts;
-            self.record_rendered_frame();
             return SyncDecision::Render;
         }
 
@@ -104,13 +103,12 @@ impl MasterClock {
             return SyncDecision::Wait(Duration::from_secs_f64(diff));
         }
 
-        // 准时区间：渲染并记录 FPS
-        self.record_rendered_frame();
+        // 准时区间
         SyncDecision::Render
     }
 
-    /// 累计渲染帧并计算实时 FPS
-    fn record_rendered_frame(&mut self) {
+    /// 累计实际渲染帧并计算实时 FPS
+    pub fn record_rendered_frame(&mut self) {
         self.frame_count += 1;
         let elapsed = self.last_fps_calc.elapsed();
 

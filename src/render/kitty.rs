@@ -1,13 +1,13 @@
-// Kitty 终端图形协议渲染器（基于 Layout 精准居中对齐，支持零内存分配超清直显）
+// Kitty 终端图形协议渲染器（基于原子双缓冲 a=t/a=p 与原地快速 Base64 流式直刷，杜绝闪烁并完美兼容现代终端）
 use crate::error::Result;
 use crate::render::buffer::RgbFrame;
 use crate::render::Layout;
 use std::io::Write;
 
-/// Kitty 协议单次传输分块最大 Base64 字符数
+/// Kitty 协议直接流式传输分块大小
 const CHUNK_SIZE: usize = 4096;
 
-/// Kitty 图形渲染器（基于双缓冲 Ping-Pong 机制与零内存拷贝流式直刷，实现 100% 零闪烁丝滑上屏）
+/// Kitty 图形渲染器（双缓冲原子上屏，零堆内存重分配）
 pub struct KittyRenderer {
     b64_buf: Vec<u8>,
     active_slot: u8,
@@ -22,12 +22,6 @@ impl KittyRenderer {
     }
 
     /// 通过 Kitty 图形转义序列渲染原始 RGB 图像（按 Layout 精确居中）
-    ///
-    /// 核心抗闪烁与极致性能机制：
-    /// 1. 采用 a=t 仅向终端显存静默传输像素数据，新帧传输期间旧帧稳定驻留屏幕，彻底杜绝黑屏间隙；
-    /// 2. 分块数据直接流式推入终端输出缓冲，绝不在内存中反复构造拼接大型 String，零堆内存重分配；
-    /// 3. 分块传输完成后，通过 a=p 配合固定 placement id (p=1) 原子化瞬时切换，杜绝撕裂与频闪；
-    /// 4. 双缓冲轮换复用 image id (1 和 2)，显存自动覆盖回收，零显存泄漏。
     pub fn render<W: Write>(
         &mut self,
         frame: &RgbFrame,
@@ -38,16 +32,18 @@ impl KittyRenderer {
             return Ok(());
         }
 
-        self.b64_buf.clear();
-
-        // 轮换目标双缓冲槽位（1 与 2 交替）
+        // 双缓冲轮转：i=1 与 i=2 交替上传
         let upload_id = if self.active_slot == 0 { 1 } else { 2 };
         self.active_slot = 1 - self.active_slot;
 
-        // 1. 快速 Base64 编码至预分配缓冲区
+        let start_row = layout.pad_y + 1;
+        let start_col = layout.pad_x + 1;
+
+        // 1. 原地快速 Base64 编码，复用已分配内存池
+        self.b64_buf.clear();
         fast_base64_encode_into(&frame.data, &mut self.b64_buf);
 
-        // 2. a=t: 静默分块直接流式写入 writer，零中转堆内存拷贝
+        // 2. 离屏传输整帧像素数据（a=t），静默接收不污染屏幕
         self.stream_chunks(
             writer,
             upload_id,
@@ -55,12 +51,10 @@ impl KittyRenderer {
             frame.height,
         )?;
 
-        // 3. a=p: 像素数据完全就绪后，以固定 placement id (p=1) 原子切换上屏
-        let start_row = layout.pad_y + 1;
-        let start_col = layout.pad_x + 1;
+        // 3. 原子化上屏（a=p）覆写 placement (p=1)，C=1 保持光标位置不发生跳动
         write!(
             writer,
-            "\x1b[{start_row};{start_col}H\x1b_Ga=p,i={upload_id},p=1,c={},r={},q=2\x1b\\",
+            "\x1b[{start_row};{start_col}H\x1b_Ga=p,i={upload_id},p=1,c={},r={},q=2,C=1\x1b\\",
             layout.render_cols,
             layout.render_rows
         )?;
@@ -86,7 +80,6 @@ impl KittyRenderer {
             let m_flag = if is_last { 0 } else { 1 };
 
             if is_first {
-                // a=t: 仅传输存储到终端显存，q=2: 静默模式，不返回 ACK 污染终端输入
                 write!(
                     writer,
                     "\x1b_Ga=t,i={img_id},f=24,s={img_w},v={img_h},m={m_flag},q=2;"

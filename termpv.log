@@ -1,0 +1,231 @@
+[   0.000s] [INFO ] termpv 启动，文件: "/mnt/media/Users/whp04/Desktop/PORN/okk/花衣つばき/AVSA-382/AVSA-382-C.mp4"
+[   0.000s] [INFO ] Kitty 共享内存已就绪: [/termpv_shm_17607_0, /termpv_shm_17607_1] (容量: 8MB)
+[   0.043s] [INFO ] 视频就绪: 时长=7954.67s, 分辨率=1920x1080
+[   0.043s] [INFO ] connecting to PulseAudio server at /run/user/1000/pulse/native
+[   0.043s] [DEBUG] CLIENT [0]: Auth(AuthParams { version: 35, supports_shm: false, supports_memfd: false, cookie: "<redacted>" })
+[   0.043s] [DEBUG] CLIENT [1]: SetClientName({"application.name": "cpal-pulseaudio-17607", "application.process.id": "17607"})
+[   0.046s] [INFO ] 正在通过音频宿主 [PulseAudio] 获取系统默认音频输出设备...
+[   0.046s] [DEBUG] CLIENT [1024]: GetSinkInfo(GetSinkInfo { index: None, name: Some("@DEFAULT_SINK@") })
+[   0.047s] [DEBUG] SERVER [1024]: Reply
+[   0.047s] [INFO ] 成功绑定音频输出设备: [助听器]
+[   0.047s] [DEBUG] CLIENT [1025]: CreatePlaybackStream(PlaybackStreamParams { sample_spec: SampleSpec { format: Float32Le, channels: 2, sample_rate: 48000 }, channel_map: [FrontLeft, FrontRight], sink_index: Some(290), sink_name: None, buffer_attr: BufferAttr { max_length: 4294967295, target_length: 4294967295, pre_buffering: 4294967295, minimum_request_length: 4294967295, fragment_size: 4294967295 }, sync_id: 0, cvolume: None, props: {}, formats: [], flags: StreamFlags { start_corked: true, no_remap_channels: false, no_remix_channels: false, fix_format: false, fix_rate: false, fix_channels: false, no_move: false, variable_rate: false, peak_detect: false, start_muted: None, adjust_latency: false, early_requests: false, no_inhibit_auto_suspend: false, fail_on_suspend: false, relative_volume: false, passthrough: false } })
+[   0.053s] [DEBUG] SERVER [1025]: Reply
+[   0.054s] [DEBUG] CLIENT [1026]: CorkPlaybackStream(CorkStreamParams { channel: 0, cork: false })
+[   0.054s] [DEBUG] CLIENT [1027]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 358828954 } })
+[   0.054s] [DEBUG] SERVER [1026]: Reply
+[   0.054s] [DEBUG] SERVER [1027]: Reply
+[   0.054s] [DEBUG] CLIENT [1028]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 359531617 } })
+[   0.054s] [DEBUG] SERVER [1028]: Reply
+[   0.054s] [INFO ] 音频输出已启动: 设备=[助听器] 采样率=48000Hz, 声道=2
+[   0.062s] [DEBUG] SERVER [-1]: Started(0)
+[   0.062s] [DEBUG] stream started: 0
+[   0.062s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.062s] [DEBUG] CLIENT [1029]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 367863408 } })
+[   0.062s] [DEBUG] SERVER [1029]: Reply
+[   0.105s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.105s] [DEBUG] CLIENT [1030]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 410729448 } })
+[   0.105s] [DEBUG] SERVER [1030]: Reply
+[   0.147s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.148s] [DEBUG] CLIENT [1031]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 453510909 } })
+[   0.148s] [DEBUG] SERVER [1031]: Reply
+[   0.190s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.191s] [DEBUG] CLIENT [1032]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 496383687 } })
+[   0.191s] [DEBUG] SERVER [1032]: Reply
+[   0.233s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.234s] [DEBUG] CLIENT [1033]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 539194144 } })
+[   0.234s] [DEBUG] SERVER [1033]: Reply
+[   0.275s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.276s] [DEBUG] CLIENT [1034]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 581320552 } })
+[   0.276s] [DEBUG] SERVER [1034]: Reply
+[   0.318s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.319s] [DEBUG] CLIENT [1035]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 624469429 } })
+[   0.319s] [DEBUG] SERVER [1035]: Reply
+[   0.361s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.362s] [DEBUG] CLIENT [1036]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 667274972 } })
+[   0.362s] [DEBUG] SERVER [1036]: Reply
+[   0.404s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.404s] [DEBUG] CLIENT [1037]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 709473768 } })
+[   0.404s] [DEBUG] SERVER [1037]: Reply
+[   0.446s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.447s] [DEBUG] CLIENT [1038]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 752344684 } })
+[   0.452s] [DEBUG] SERVER [1038]: Reply
+[   0.489s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.489s] [DEBUG] CLIENT [1039]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 794730665 } })
+[   0.489s] [DEBUG] SERVER [1039]: Reply
+[   0.531s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.532s] [DEBUG] CLIENT [1040]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 837469276 } })
+[   0.532s] [DEBUG] SERVER [1040]: Reply
+[   0.574s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.575s] [DEBUG] CLIENT [1041]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 880337649 } })
+[   0.575s] [DEBUG] SERVER [1041]: Reply
+[   0.617s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.617s] [DEBUG] CLIENT [1042]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 922856853 } })
+[   0.617s] [DEBUG] SERVER [1042]: Reply
+[   0.659s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.659s] [DEBUG] CLIENT [1043]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843386, tv_nsec: 965209545 } })
+[   0.659s] [DEBUG] SERVER [1043]: Reply
+[   0.702s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.702s] [DEBUG] CLIENT [1044]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 8004895 } })
+[   0.702s] [DEBUG] SERVER [1044]: Reply
+[   0.745s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.745s] [DEBUG] CLIENT [1045]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 50743802 } })
+[   0.745s] [DEBUG] SERVER [1045]: Reply
+[   0.787s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.788s] [DEBUG] CLIENT [1046]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 93514425 } })
+[   0.788s] [DEBUG] SERVER [1046]: Reply
+[   0.830s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.831s] [DEBUG] CLIENT [1047]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 136883187 } })
+[   0.832s] [DEBUG] SERVER [1047]: Reply
+[   0.873s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.873s] [DEBUG] CLIENT [1048]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 179091027 } })
+[   0.874s] [DEBUG] SERVER [1048]: Reply
+[   0.915s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.916s] [DEBUG] CLIENT [1049]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 221500277 } })
+[   0.916s] [DEBUG] SERVER [1049]: Reply
+[   0.958s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   0.958s] [DEBUG] CLIENT [1050]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 264166606 } })
+[   0.959s] [DEBUG] SERVER [1050]: Reply
+[   1.001s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.002s] [DEBUG] CLIENT [1051]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 307306140 } })
+[   1.002s] [DEBUG] SERVER [1051]: Reply
+[   1.043s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.044s] [DEBUG] CLIENT [1052]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 349484137 } })
+[   1.044s] [DEBUG] SERVER [1052]: Reply
+[   1.086s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.086s] [DEBUG] CLIENT [1053]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 392059555 } })
+[   1.086s] [DEBUG] SERVER [1053]: Reply
+[   1.129s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.129s] [DEBUG] CLIENT [1054]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 435017526 } })
+[   1.130s] [DEBUG] SERVER [1054]: Reply
+[   1.171s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.171s] [DEBUG] CLIENT [1055]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 477204852 } })
+[   1.171s] [DEBUG] SERVER [1055]: Reply
+[   1.214s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.214s] [DEBUG] CLIENT [1056]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 520053554 } })
+[   1.214s] [DEBUG] SERVER [1056]: Reply
+[   1.257s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.257s] [DEBUG] CLIENT [1057]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 562921690 } })
+[   1.258s] [DEBUG] SERVER [1057]: Reply
+[   1.299s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.299s] [DEBUG] CLIENT [1058]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 605246272 } })
+[   1.300s] [DEBUG] SERVER [1058]: Reply
+[   1.342s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.342s] [DEBUG] CLIENT [1059]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 647887629 } })
+[   1.342s] [DEBUG] SERVER [1059]: Reply
+[   1.385s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.385s] [DEBUG] CLIENT [1060]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 690665556 } })
+[   1.385s] [DEBUG] SERVER [1060]: Reply
+[   1.427s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.427s] [DEBUG] CLIENT [1061]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 733253363 } })
+[   1.428s] [DEBUG] SERVER [1061]: Reply
+[   1.470s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.470s] [DEBUG] CLIENT [1062]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 776174555 } })
+[   1.471s] [DEBUG] SERVER [1062]: Reply
+[   1.513s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.513s] [DEBUG] CLIENT [1063]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 818583393 } })
+[   1.513s] [DEBUG] SERVER [1063]: Reply
+[   1.555s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.556s] [DEBUG] CLIENT [1064]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 861500854 } })
+[   1.556s] [DEBUG] SERVER [1064]: Reply
+[   1.598s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.598s] [DEBUG] CLIENT [1065]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 904223402 } })
+[   1.599s] [DEBUG] SERVER [1065]: Reply
+[   1.641s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.641s] [DEBUG] CLIENT [1066]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 946665386 } })
+[   1.641s] [DEBUG] SERVER [1066]: Reply
+[   1.683s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.684s] [DEBUG] CLIENT [1067]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843387, tv_nsec: 989334942 } })
+[   1.684s] [DEBUG] SERVER [1067]: Reply
+[   1.726s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.727s] [DEBUG] CLIENT [1068]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 32255748 } })
+[   1.727s] [DEBUG] SERVER [1068]: Reply
+[   1.769s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.769s] [DEBUG] CLIENT [1069]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 74918409 } })
+[   1.769s] [DEBUG] SERVER [1069]: Reply
+[   1.811s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.811s] [DEBUG] CLIENT [1070]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 117188656 } })
+[   1.811s] [DEBUG] SERVER [1070]: Reply
+[   1.854s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.854s] [DEBUG] CLIENT [1071]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 159965564 } })
+[   1.854s] [DEBUG] SERVER [1071]: Reply
+[   1.897s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.897s] [DEBUG] CLIENT [1072]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 203150717 } })
+[   1.898s] [DEBUG] SERVER [1072]: Reply
+[   1.939s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.939s] [DEBUG] CLIENT [1073]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 245175431 } })
+[   1.939s] [DEBUG] SERVER [1073]: Reply
+[   1.982s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   1.982s] [DEBUG] CLIENT [1074]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 287964352 } })
+[   1.982s] [DEBUG] SERVER [1074]: Reply
+[   2.025s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.025s] [DEBUG] CLIENT [1075]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 330816401 } })
+[   2.025s] [DEBUG] SERVER [1075]: Reply
+[   2.068s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.068s] [DEBUG] CLIENT [1076]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 373597415 } })
+[   2.068s] [DEBUG] SERVER [1076]: Reply
+[   2.110s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.110s] [DEBUG] CLIENT [1077]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 415937635 } })
+[   2.110s] [DEBUG] SERVER [1077]: Reply
+[   2.153s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.153s] [DEBUG] CLIENT [1078]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 458695968 } })
+[   2.153s] [DEBUG] SERVER [1078]: Reply
+[   2.195s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.196s] [DEBUG] CLIENT [1079]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 501742226 } })
+[   2.196s] [DEBUG] SERVER [1079]: Reply
+[   2.238s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.238s] [DEBUG] CLIENT [1080]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 544011194 } })
+[   2.238s] [DEBUG] SERVER [1080]: Reply
+[   2.281s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.281s] [DEBUG] CLIENT [1081]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 586808852 } })
+[   2.281s] [DEBUG] SERVER [1081]: Reply
+[   2.323s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.324s] [DEBUG] CLIENT [1082]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 629372810 } })
+[   2.324s] [DEBUG] SERVER [1082]: Reply
+[   2.366s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.367s] [DEBUG] CLIENT [1083]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 672553074 } })
+[   2.367s] [DEBUG] SERVER [1083]: Reply
+[   2.409s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.409s] [DEBUG] CLIENT [1084]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 714842857 } })
+[   2.409s] [DEBUG] SERVER [1084]: Reply
+[   2.451s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.451s] [DEBUG] CLIENT [1085]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 757196492 } })
+[   2.451s] [DEBUG] SERVER [1085]: Reply
+[   2.494s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.494s] [DEBUG] CLIENT [1086]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 799956796 } })
+[   2.494s] [DEBUG] SERVER [1086]: Reply
+[   2.537s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.537s] [DEBUG] CLIENT [1087]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 842580035 } })
+[   2.537s] [DEBUG] SERVER [1087]: Reply
+[   2.579s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.579s] [DEBUG] CLIENT [1088]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 885214058 } })
+[   2.580s] [DEBUG] SERVER [1088]: Reply
+[   2.622s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.622s] [DEBUG] CLIENT [1089]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 928070612 } })
+[   2.622s] [DEBUG] SERVER [1089]: Reply
+[   2.665s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.665s] [DEBUG] CLIENT [1090]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843388, tv_nsec: 970708702 } })
+[   2.665s] [DEBUG] SERVER [1090]: Reply
+[   2.708s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.708s] [DEBUG] CLIENT [1091]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 13631116 } })
+[   2.708s] [DEBUG] SERVER [1091]: Reply
+[   2.750s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.751s] [DEBUG] CLIENT [1092]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 56396512 } })
+[   2.751s] [DEBUG] SERVER [1092]: Reply
+[   2.793s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.793s] [DEBUG] CLIENT [1093]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 98793082 } })
+[   2.793s] [DEBUG] SERVER [1093]: Reply
+[   2.835s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.836s] [DEBUG] CLIENT [1094]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 141446776 } })
+[   2.836s] [DEBUG] SERVER [1094]: Reply
+[   2.878s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.878s] [DEBUG] CLIENT [1095]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 183818928 } })
+[   2.878s] [DEBUG] SERVER [1095]: Reply
+[   2.921s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.921s] [DEBUG] CLIENT [1096]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 226572736 } })
+[   2.921s] [DEBUG] SERVER [1096]: Reply
+[   2.963s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   2.964s] [DEBUG] CLIENT [1097]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 269532635 } })
+[   2.964s] [DEBUG] SERVER [1097]: Reply
+[   3.006s] [DEBUG] SERVER [-1]: Request(Request { channel: 0, length: 16384 })
+[   3.006s] [DEBUG] CLIENT [1098]: GetPlaybackLatency(LatencyParams { channel: 0, now: SystemTime { tv_sec: 1794843389, tv_nsec: 312015808 } })
+[   3.006s] [DEBUG] SERVER [1098]: Reply

@@ -139,6 +139,8 @@ impl App {
                 continue;
             }
 
+            self.clock.record_rendered_frame();
+
             // 7. 渲染视频帧与 OSD 状态栏
             self.render_engine
                 .render_frame(&frame, &layout, &mut out_writer)?;
@@ -237,11 +239,9 @@ impl App {
 
         let (target_px_w, target_px_h) = match self.render_engine.current_mode() {
             RenderMode::Kitty => {
-                // 根据终端网格列数与物理像素估算最佳高清分辨率
-                // 1280x720 在 160 列终端中每字符单元格分配 8 个物理像素，画质晶莹剔透，
-                // 同时将 PTY 单帧数据量从 8.3MB 大幅压制至 3.5MB，杜绝终端 PTY 阻塞导致的掉帧与卡顿
-                let est_col_width = 8;
-                let max_w = src_w.min(1280);
+                // 基于终端字符物理像素比（约 9px/列），按实际显示区域自适应缩放（上限 1080P，兼顾极清画质与终端流控）
+                let est_col_width = 9;
+                let max_w = src_w.min(1080);
                 let min_w = 320.min(max_w);
                 let raw_w = (render_cols as u32 * est_col_width).clamp(min_w, max_w);
                 let px_w = (raw_w & !1).max(2);
