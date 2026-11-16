@@ -15,6 +15,9 @@ pub struct AudioDecoder {
     target_channels: u16,
 }
 
+// SAFETY: AudioDecoder 独占底层的解码器句柄与 SwrContext
+unsafe impl Send for AudioDecoder {}
+
 impl AudioDecoder {
     /// 初始化音频解码器并设定目标播放采样率（如 48000Hz 立体声）
     pub fn new(stream: &ffmpeg_next::Stream, target_sample_rate: u32, target_channels: u16) -> Result<Self> {

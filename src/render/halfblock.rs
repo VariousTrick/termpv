@@ -1,4 +1,4 @@
-// 24位真彩色半块双像素（▀）渲染器（基于 Layout 绝对坐标定位，彻底杜绝换行滚屏与画面裁切）
+// 24位真彩色半块双像素（▀）渲染器（基于 Layout 绝对坐标定位与严格内存安全防线）
 use crate::error::Result;
 use crate::render::buffer::RgbFrame;
 use crate::render::Layout;
@@ -13,7 +13,7 @@ pub struct HalfBlockRenderer {
 impl HalfBlockRenderer {
     pub fn new() -> Self {
         Self {
-            scratch_buf: String::with_capacity(128 * 1024),
+            scratch_buf: String::with_capacity(512 * 1024),
         }
     }
 
@@ -32,8 +32,9 @@ impl HalfBlockRenderer {
 
         let start_row = (layout.pad_y as usize) + 1;
         let start_col = (layout.pad_x as usize) + 1;
-        let cell_w = layout.render_cols as usize;
-        let cell_h = layout.render_rows as usize;
+        // 安全截断避免超越解码帧实际数据维度
+        let cell_w = (layout.render_cols as usize).min(frame.width as usize);
+        let cell_h = (layout.render_rows as usize).min((frame.height as usize) / 2);
 
         // 1. 顶部留白空行清除（如果有）
         for r in 1..start_row {
@@ -53,7 +54,7 @@ impl HalfBlockRenderer {
         Ok(())
     }
 
-    /// 核心 ANSI 半块编码循环（行绝对寻址与颜色去重）
+    /// 核心 ANSI 半块编码循环（行绝对寻址、安全越界防御与颜色去重）
     fn encode_halfblocks(
         &mut self,
         frame: &RgbFrame,
@@ -62,6 +63,9 @@ impl HalfBlockRenderer {
         start_row: usize,
         start_col: usize,
     ) {
+        let frame_w = frame.width as usize;
+        let frame_len = frame.data.len();
+
         for cell_y in 0..height {
             let row = start_row + cell_y;
             // 行首直接跳转到指定居中列
@@ -72,13 +76,17 @@ impl HalfBlockRenderer {
             let top_y = cell_y * 2;
             let bot_y = top_y + 1;
 
-            let top_row_idx = top_y * (frame.width as usize) * 3;
-            let bot_row_idx = bot_y * (frame.width as usize) * 3;
+            let top_row_idx = top_y * frame_w * 3;
+            let bot_row_idx = bot_y * frame_w * 3;
 
             for cell_x in 0..width {
                 let px_offset = cell_x * 3;
                 let top_idx = top_row_idx + px_offset;
                 let bot_idx = bot_row_idx + px_offset;
+
+                if top_idx + 2 >= frame_len {
+                    break;
+                }
 
                 let fg = (
                     frame.data[top_idx],
@@ -86,7 +94,7 @@ impl HalfBlockRenderer {
                     frame.data[top_idx + 2],
                 );
 
-                let bg = if bot_idx + 2 < frame.data.len() {
+                let bg = if bot_idx + 2 < frame_len {
                     (
                         frame.data[bot_idx],
                         frame.data[bot_idx + 1],

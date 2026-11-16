@@ -1,4 +1,4 @@
-// 基于 cpal 的音频设备输出与播放模块（自动绑定系统默认输出设备，无人工延迟介入）
+// 基于 cpal 的音频设备输出与播放模块（自动绑定系统默认输出设备，支持绝对音频主时钟）
 use crate::error::{Result, TermpvError};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
@@ -13,8 +13,8 @@ pub struct AudioPlayer {
     sample_rate: u32,
     channels: u16,
     buffer: Arc<Mutex<VecDeque<f32>>>,
-    #[allow(dead_code)]
     played_samples: Arc<AtomicU64>,
+    base_pts_us: Arc<AtomicU64>,
     volume_bits: Arc<AtomicU32>,
     muted: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -53,6 +53,7 @@ impl AudioPlayer {
 
         let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 4)));
         let played_samples = Arc::new(AtomicU64::new(0));
+        let base_pts_us = Arc::new(AtomicU64::new(0));
         let volume_bits = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let muted = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
@@ -63,7 +64,7 @@ impl AudioPlayer {
         let mute_clone = Arc::clone(&muted);
         let paused_clone = Arc::clone(&paused);
 
-        // 创建音频硬件拉流回调（纯粹流填充，不干涉视频时钟）
+        // 创建音频硬件拉流回调（高优先级异步流填充，不阻塞视频时钟）
         let stream = device
             .build_output_stream(
                 stream_config,
@@ -95,6 +96,7 @@ impl AudioPlayer {
             channels,
             buffer,
             played_samples,
+            base_pts_us,
             volume_bits,
             muted,
             paused,
@@ -160,21 +162,51 @@ impl AudioPlayer {
         guard.extend(samples);
     }
 
-    /// 执行 Seek 时重置音频缓冲
-    pub fn seek_to(&self, _target_secs: f64) {
+    /// 检查声卡拉流是否已经真正激活出声
+    pub fn is_active(&self) -> bool {
+        self.played_samples.load(Ordering::Relaxed) > 0 || self.base_pts_us.load(Ordering::Relaxed) > 0
+    }
+
+    /// 获取声卡硬件当前物理播放进度（秒）
+    pub fn current_pts(&self) -> f64 {
+        let played = self.played_samples.load(Ordering::Relaxed);
+        let base_us = self.base_pts_us.load(Ordering::Relaxed);
+        let secs_played = (played as f64) / (self.sample_rate as f64 * self.channels as f64);
+        (base_us as f64 / 1_000_000.0) + secs_played
+    }
+
+    /// 获取当前环形缓冲已堆积的音频时长（秒，用于流控）
+    pub fn buffered_duration(&self) -> f64 {
+        let len = self.buffer.lock().map(|b| b.len()).unwrap_or(0);
+        (len as f64) / (self.sample_rate as f64 * self.channels as f64)
+    }
+
+    /// 执行 Seek 时重置音频缓冲并更新基准时间戳
+    pub fn seek_to(&self, target_secs: f64) {
         if let Ok(mut guard) = self.buffer.lock() {
             guard.clear();
         }
+        self.played_samples.store(0, Ordering::Relaxed);
+        let us = (target_secs.max(0.0) * 1_000_000.0) as u64;
+        self.base_pts_us.store(us, Ordering::Relaxed);
     }
 
     /// 设置播放音量 (0.0 ~ 2.0)
     pub fn set_volume(&self, volume: f32) {
-        self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+        self.volume_bits.store(volume.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn volume(&self) -> f32 {
+        f32::from_bits(self.volume_bits.load(Ordering::Relaxed))
     }
 
     /// 设置静音状态
     pub fn set_mute(&self, is_muted: bool) {
         self.muted.store(is_muted, Ordering::Relaxed);
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
     }
 
     /// 设置暂停状态

@@ -1,15 +1,11 @@
-// 应用程序核心控制器模块（驱动视频解封装、音频输出、TUI 渲染主循环）
-use crate::audio::{AudioDecoder, AudioPlayer};
+// 应用程序核心控制器模块（驱动多线程音视频管线、TUI 渲染主循环）
 use crate::config::{Config, RenderMode};
 use crate::core::clock::{MasterClock, SyncDecision};
-use crate::core::decoder::VideoDecoder;
-use crate::core::demuxer::{Demuxer, StreamKind};
+use crate::core::pipeline::PlaybackPipeline;
 use crate::error::{Result, TermpvError};
-use crate::render::buffer::RgbFrame;
 use crate::render::{Layout, RenderEngine};
 use crate::tui::{drain_actions, render_osd_bar, OsdState, PlayerAction, TerminalGuard};
 use crossterm::terminal;
-use std::collections::VecDeque;
 use std::io::{stdout, BufWriter, Write};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -19,8 +15,6 @@ pub struct App {
     config: Config,
     clock: MasterClock,
     render_engine: RenderEngine,
-    audio_player: Option<AudioPlayer>,
-    audio_decoder: Option<AudioDecoder>,
     osd_state: OsdState,
     running: bool,
 }
@@ -43,8 +37,6 @@ impl App {
             render_engine: RenderEngine::new(config.render_mode),
             config,
             clock: MasterClock::new(),
-            audio_player: None,
-            audio_decoder: None,
             osd_state: osd,
             running: true,
         }
@@ -60,43 +52,39 @@ impl App {
         ffmpeg_next::init()
             .map_err(|e| TermpvError::FfmpegError(format!("FFmpeg 初始化失败: {e}")))?;
 
-        // 打开媒体解封装器
-        let mut demuxer = Demuxer::open(&self.config.file)?;
-        self.osd_state.total_secs = demuxer.duration();
+        // 启动工业级多线程解耦管线（后台启动 Demuxer + AudioWorker + VideoWorker）
+        let pipeline = PlaybackPipeline::new(&self.config.file, &self.config)?;
+        self.osd_state.total_secs = pipeline.duration();
 
-        // 1. 初始化视频解码器
-        let video_stream = demuxer.video_stream()?;
-        let mut video_decoder = VideoDecoder::new(&video_stream)?;
         log::info!(
-            "视频就绪: 时长={:.2}s, 分辨率={}x{}",
-            demuxer.duration(),
-            video_decoder.source_width(),
-            video_decoder.source_height()
+            "多线程播放管线已就绪: 时长={:.2}s, 视频分辨率={}x{}",
+            pipeline.duration(),
+            pipeline.source_width(),
+            pipeline.source_height()
         );
-
-        // 2. 初始化音频硬件与解码器（如未禁用音频）
-        if !self.config.no_audio {
-            self.setup_audio(&demuxer);
-        }
 
         // 激活终端接管保护
         let _guard = TerminalGuard::new()?;
-        let mut out_writer = BufWriter::with_capacity(256 * 1024, stdout());
+        let mut out_writer = BufWriter::with_capacity(512 * 1024, stdout());
 
-        let mut frame_queue: VecDeque<RgbFrame> = VecDeque::with_capacity(16);
-        let mut is_eof = false;
+        // 计算初始尺寸并通知视频解码 Worker 准备首批缩放帧
+        let (term_w, term_h) = terminal::size()?;
+        let video_term_h = term_h.saturating_sub(1).max(1);
+        let (initial_layout, init_w, init_h) = self.calculate_contain_layout(
+            pipeline.source_width(),
+            pipeline.source_height(),
+            term_w,
+            video_term_h,
+        );
+        pipeline.set_target_resolution(init_w, init_h);
+
+        let mut last_layout = initial_layout;
 
         while self.running {
             // 1. 处理用户键盘事件
-            let mode_changed = self.handle_input_events(&mut demuxer, &mut frame_queue)?;
+            let mode_changed = self.handle_input_events(&pipeline, &mut out_writer)?;
             if !self.running {
                 break;
-            }
-
-            // 模式切换时全屏清屏复位，清除旧模式残影与图形
-            if mode_changed {
-                write!(out_writer, "\x1b_Ga=d,d=a,q=2\x1b\\\x1b[2J\x1b[1;1H")?;
-                out_writer.flush()?;
             }
 
             // 2. 暂停状态处理
@@ -105,87 +93,79 @@ impl App {
                 continue;
             }
 
-            // 3. 动态获取终端尺寸并以 Contain 算法计算自适应居中分辨率
-            let (term_w, term_h) = terminal::size()?;
-            let video_term_h = term_h.saturating_sub(1).max(1);
-            let (layout, target_w, target_h) = self.calculate_contain_layout(
-                video_decoder.source_width(),
-                video_decoder.source_height(),
-                term_w,
-                video_term_h,
-            );
+            // 3. 终端窗口尺寸变更或模式切换响应
+            let (cur_term_w, cur_term_h) = terminal::size()?;
+            let cur_video_h = cur_term_h.saturating_sub(1).max(1);
+            if mode_changed || cur_term_w != last_layout.term_w || cur_video_h != last_layout.term_h {
+                let (new_layout, new_target_w, new_target_h) = self.calculate_contain_layout(
+                    pipeline.source_width(),
+                    pipeline.source_height(),
+                    cur_term_w,
+                    cur_video_h,
+                );
+                last_layout = new_layout;
+                pipeline.set_target_resolution(new_target_w, new_target_h);
+            }
 
-            // 4. 缓冲池不足时读取数据包进行解码填充
-            self.fill_frame_queue(
-                &mut demuxer,
-                &mut video_decoder,
-                &mut frame_queue,
-                target_w,
-                target_h,
-                &mut is_eof,
-            )?;
-
-            // 5. 取出待渲染帧
-            let Some(frame) = frame_queue.pop_front() else {
-                if is_eof {
+            // 4. 从后台有界队列提取预解码成品帧（超时 15ms，绝不阻塞 UI）
+            let Some(frame) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
+                if pipeline.is_eof() {
                     self.running = false;
                 }
-                thread::sleep(Duration::from_millis(5));
                 continue;
             };
 
-            // 6. 音画同步与帧调度（单调 CPU 时钟，保证视频丝滑流畅）
-            if !self.schedule_frame_pts(frame.pts, &mut demuxer, &mut frame_queue)? {
-                continue;
+            // 5. 帧调度：优先以硬件音频时钟为基准，无音频时回退至 CPU 绝对单调时钟
+            let audio_pts = pipeline.current_audio_pts();
+            let decision = self.schedule_frame_pts(frame.pts, audio_pts);
+
+            match decision {
+                SyncDecision::Drop => {
+                    self.clock.evaluate_frame(frame.pts); // 累计丢帧统计
+                    continue;
+                }
+                SyncDecision::Wait(dur) => {
+                    let deadline = Instant::now() + dur;
+                    while Instant::now() < deadline {
+                        let inner_mode_changed = self.handle_input_events(&pipeline, &mut out_writer)?;
+                        if inner_mode_changed {
+                            let (cw, ch) = terminal::size().unwrap_or((120, 40));
+                            let cvh = ch.saturating_sub(1).max(1);
+                            let (nl, ntw, nth) = self.calculate_contain_layout(
+                                pipeline.source_width(),
+                                pipeline.source_height(),
+                                cw,
+                                cvh,
+                            );
+                            last_layout = nl;
+                            pipeline.set_target_resolution(ntw, nth);
+                        }
+                        if !self.running || self.osd_state.paused {
+                            break;
+                        }
+                        let rem = deadline.saturating_duration_since(Instant::now());
+                        thread::sleep(rem.min(Duration::from_millis(3)));
+                    }
+                }
+                SyncDecision::Render => {}
+            }
+
+            if !self.running {
+                break;
             }
 
             self.clock.record_rendered_frame();
 
-            // 7. 渲染视频帧与 OSD 状态栏
+            // 6. 渲染视频图像与 OSD 状态栏
             self.render_engine
-                .render_frame(&frame, &layout, &mut out_writer)?;
+                .render_frame(&frame, &last_layout, &mut out_writer)?;
 
-            self.render_osd(term_w, term_h, frame.pts, &mut out_writer)?;
-
+            let current_pts = audio_pts.unwrap_or(frame.pts);
+            self.render_osd(cur_term_w, cur_term_h, current_pts, &mut out_writer)?;
             out_writer.flush()?;
         }
 
         Ok(())
-    }
-
-    /// 初始化音频硬件输出与解码管线
-    fn setup_audio(&mut self, demuxer: &Demuxer) {
-        let Some(audio_stream) = demuxer.audio_stream() else {
-            log::info!("媒体文件无音频流");
-            return;
-        };
-
-        let player = match AudioPlayer::new() {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("未能初始化音频输出设备 ({e})，将以静音模式运行");
-                return;
-            }
-        };
-
-        player.set_volume(self.config.volume);
-        player.set_mute(self.config.mute);
-
-        match AudioDecoder::new(&audio_stream, player.sample_rate(), player.channels()) {
-            Ok(decoder) => {
-                log::info!(
-                    "音频输出已启动: 设备=[{}] 采样率={}Hz, 声道={}",
-                    player.device_name(),
-                    player.sample_rate(),
-                    player.channels()
-                );
-                self.audio_decoder = Some(decoder);
-                self.audio_player = Some(player);
-            }
-            Err(e) => {
-                log::warn!("初始化音频解码器失败: {e}");
-            }
-        }
     }
 
     /// 严格遵循物理字符几何与 Contain 算法计算等比居中尺寸（自适应保留黑边，100% 杜绝裁切失真）
@@ -250,95 +230,50 @@ impl App {
                 (px_w, px_h)
             }
             RenderMode::HalfBlock => {
-                (render_cols as u32, (render_rows as u32) * 2)
+                let px_w = (render_cols as u32 & !1).max(2);
+                let px_h = ((render_rows as u32 * 2) & !1).max(2);
+                (px_w, px_h)
             }
             RenderMode::Ascii => {
-                (render_cols as u32, render_rows as u32)
+                let px_w = (render_cols as u32 & !1).max(2);
+                let px_h = (render_rows as u32 & !1).max(2);
+                (px_w, px_h)
             }
-            _ => (render_cols as u32, (render_rows as u32) * 2),
+            _ => {
+                let px_w = (render_cols as u32 & !1).max(2);
+                let px_h = ((render_rows as u32 * 2) & !1).max(2);
+                (px_w, px_h)
+            }
         };
 
         (layout, target_px_w, target_px_h)
     }
 
-    /// 持续拉取解封装数据包，音视频协同解码分发
-    fn fill_frame_queue(
-        &mut self,
-        demuxer: &mut Demuxer,
-        decoder: &mut VideoDecoder,
-        queue: &mut VecDeque<RgbFrame>,
-        target_w: u32,
-        target_h: u32,
-        is_eof: &mut bool,
-    ) -> Result<()> {
-        while queue.len() < 8 && !*is_eof {
-            let Some((kind, packet)) = demuxer.read_packet() else {
-                if self.config.loop_playback {
-                    demuxer.seek(0.0)?;
-                    self.clock.seek_to(0.0);
-                    if let Some(player) = &self.audio_player {
-                        player.seek_to(0.0);
-                    }
-                    continue;
-                }
-                *is_eof = true;
-                let flushed = decoder.flush(target_w, target_h)?;
-                queue.extend(flushed);
-                break;
-            };
-
-            match kind {
-                StreamKind::Video => {
-                    let frames = decoder.decode_packet(&packet, target_w, target_h)?;
-                    queue.extend(frames);
-                }
-                StreamKind::Audio => {
-                    if let (Some(audio_dec), Some(audio_ply)) =
-                        (&mut self.audio_decoder, &self.audio_player)
-                    {
-                        if let Ok(samples) = audio_dec.decode_packet(&packet) {
-                            audio_ply.push_samples(&samples);
-                        }
-                    }
-                }
-                StreamKind::Other => {}
+    /// 帧调度决策（音频主时钟优先，无音频时使用单调 CPU 壁钟）
+    fn schedule_frame_pts(&mut self, frame_pts: f64, audio_pts: Option<f64>) -> SyncDecision {
+        if let Some(a_pts) = audio_pts {
+            let diff = frame_pts - a_pts;
+            // 画面落后音频超过 80ms：丢帧追赶音频
+            if diff < -0.080 {
+                return SyncDecision::Drop;
             }
-        }
-        Ok(())
-    }
-
-    /// 根据单调主时钟评估视频帧时间戳
-    fn schedule_frame_pts(
-        &mut self,
-        frame_pts: f64,
-        demuxer: &mut Demuxer,
-        queue: &mut VecDeque<RgbFrame>,
-    ) -> Result<bool> {
-        let decision = self.clock.evaluate_frame(frame_pts);
-
-        match decision {
-            SyncDecision::Wait(dur) => {
-                let deadline = Instant::now() + dur;
-                while Instant::now() < deadline {
-                    self.handle_input_events(demuxer, queue)?;
-                    if !self.running || self.osd_state.paused {
-                        return Ok(false);
-                    }
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    thread::sleep(remaining.min(Duration::from_millis(3)));
-                }
-                Ok(true)
+            // 画面超前音频超过 2ms：等待音频对齐
+            if diff > 0.002 {
+                return SyncDecision::Wait(Duration::from_secs_f64(diff));
             }
-            SyncDecision::Drop => Ok(false),
-            SyncDecision::Render => Ok(true),
+            // 准时渲染
+            SyncDecision::Render
+        } else {
+            // 回退到 CPU 单调时钟
+            self.clock.evaluate_frame(frame_pts)
         }
     }
 
     /// 排空键盘事件并响应播放控制
-    fn handle_input_events(
+    fn handle_input_events<W: Write>(
         &mut self,
-        demuxer: &mut Demuxer,
-        queue: &mut VecDeque<RgbFrame>,
+        pipeline: &PlaybackPipeline,
+        writer: &mut W,
     ) -> Result<bool> {
         let mut mode_changed = false;
         let actions = drain_actions(Duration::from_millis(1))?;
@@ -350,59 +285,51 @@ impl App {
                     return Ok(false);
                 }
                 PlayerAction::TogglePause => {
-                    self.toggle_pause();
+                    self.osd_state.paused = !self.osd_state.paused;
+                    pipeline.set_paused(self.osd_state.paused);
+                    if self.osd_state.paused {
+                        self.clock.pause();
+                    } else {
+                        self.clock.resume();
+                    }
                 }
                 PlayerAction::CycleRenderMode => {
                     let new_mode = self.render_engine.cycle_mode();
                     self.osd_state.mode = new_mode;
-                    queue.clear();
                     mode_changed = true;
                     log::info!("切换渲染模式至: {:?}", new_mode);
+
+                    // 彻底清除终端中可能残留的 Kitty GPU 贴图纹理与全屏内容，防止图层遮挡
+                    write!(
+                        writer,
+                        "\x1b_Ga=d,d=A,q=2\x1b\\\x1b_Ga=d,d=a,q=2\x1b\\\x1b[2J\x1b[1;1H\x1b[3J"
+                    )?;
+                    writer.flush()?;
                 }
                 PlayerAction::ToggleOsd => {
                     self.osd_state.visible = !self.osd_state.visible;
                 }
                 PlayerAction::AdjustVolume(delta) => {
-                    self.osd_state.volume = (self.osd_state.volume + delta).clamp(0.0, 2.0);
-                    if let Some(player) = &self.audio_player {
-                        player.set_volume(self.osd_state.volume);
-                    }
+                    let next = (pipeline.volume() + delta).clamp(0.0, 2.0);
+                    pipeline.set_volume(next);
+                    self.osd_state.volume = next;
                 }
                 PlayerAction::ToggleMute => {
-                    self.osd_state.muted = !self.osd_state.muted;
-                    if let Some(player) = &self.audio_player {
-                        player.set_mute(self.osd_state.muted);
-                    }
+                    pipeline.toggle_mute();
+                    self.osd_state.muted = pipeline.is_muted();
                 }
                 PlayerAction::Seek(delta_secs) => {
-                    let current = self.clock.current_time();
-                    let target = (current + delta_secs as f64).max(0.0);
-                    let _ = demuxer.seek(target);
+                    let current = pipeline
+                        .current_audio_pts()
+                        .unwrap_or_else(|| self.clock.current_time());
+                    let target = (current + delta_secs as f64).clamp(0.0, pipeline.duration());
+                    pipeline.seek(target);
                     self.clock.seek_to(target);
-                    if let Some(player) = &self.audio_player {
-                        player.seek_to(target);
-                    }
-                    queue.clear();
                 }
                 PlayerAction::None => {}
             }
         }
         Ok(mode_changed)
-    }
-
-    fn toggle_pause(&mut self) {
-        self.osd_state.paused = !self.osd_state.paused;
-        if self.osd_state.paused {
-            self.clock.pause();
-            if let Some(player) = &self.audio_player {
-                player.set_paused(true);
-            }
-        } else {
-            self.clock.resume();
-            if let Some(player) = &self.audio_player {
-                player.set_paused(false);
-            }
-        }
     }
 
     fn render_osd<W: Write>(

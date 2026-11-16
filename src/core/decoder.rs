@@ -18,6 +18,9 @@ pub struct VideoDecoder {
     source_h: u32,
 }
 
+// SAFETY: VideoDecoder 独占底层的解码器句柄与 SwsContext，在跨线程转移后由对应线程独占操作
+unsafe impl Send for VideoDecoder {}
+
 impl VideoDecoder {
     /// 根据视频流参数初始化解码器
     pub fn new(stream: &ffmpeg_next::Stream) -> Result<Self> {
