@@ -198,15 +198,7 @@ impl PlaybackPipeline {
                 }
             }
 
-            // 2. 音频缓冲流控：若声卡水库已蓄水超过 2 秒，微休眠避免过度抢占 CPU 与内存
-            if let Some(player) = &audio_player {
-                if player.buffered_duration() > 2.0 {
-                    thread::sleep(Duration::from_millis(8));
-                    continue;
-                }
-            }
-
-            // 3. 读取下一数据包
+            // 2. 读取下一媒体包（视频队列满时通过 SyncSender 自然反压，避免单向饥饿）
             match demuxer.read_packet() {
                 Some((StreamKind::Audio, packet)) => {
                     // 音频数据包即刻解码为 PCM，推入声卡水库，实现零延迟出声

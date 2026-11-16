@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 /// 音频硬件播放控制器
 pub struct AudioPlayer {
-    _stream: Stream,
+    stream: Stream,
     device_name: String,
     sample_rate: u32,
     channels: u16,
@@ -18,6 +18,8 @@ pub struct AudioPlayer {
     volume_bits: Arc<AtomicU32>,
     muted: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
+    last_callback: Arc<Mutex<Option<(std::time::Instant, u64)>>>,
 }
 
 impl AudioPlayer {
@@ -57,12 +59,15 @@ impl AudioPlayer {
         let volume_bits = Arc::new(AtomicU32::new(1.0f32.to_bits()));
         let muted = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicBool::new(false));
+        let last_callback = Arc::new(Mutex::new(None));
 
         let buf_clone = Arc::clone(&buffer);
         let played_clone = Arc::clone(&played_samples);
         let vol_clone = Arc::clone(&volume_bits);
         let mute_clone = Arc::clone(&muted);
         let paused_clone = Arc::clone(&paused);
+        let cb_clone = Arc::clone(&last_callback);
 
         // 创建音频硬件拉流回调（高优先级异步流填充，不阻塞视频时钟）
         let stream = device
@@ -76,6 +81,7 @@ impl AudioPlayer {
                         &vol_clone,
                         &mute_clone,
                         &paused_clone,
+                        &cb_clone,
                     );
                 },
                 move |err| {
@@ -85,12 +91,9 @@ impl AudioPlayer {
             )
             .map_err(|e| TermpvError::AudioError(format!("构建音频输出流失败: {e}")))?;
 
-        stream
-            .play()
-            .map_err(|e| TermpvError::AudioError(format!("启动音频播放失败: {e}")))?;
-
+        // 对齐 MPV：初始保持流封堵（corked / paused），等到解码器预卷填充了首批有效数据后再播放，杜绝底层灌入静音导致延时出声
         Ok(Self {
-            _stream: stream,
+            stream,
             device_name,
             sample_rate,
             channels,
@@ -100,6 +103,8 @@ impl AudioPlayer {
             volume_bits,
             muted,
             paused,
+            started,
+            last_callback,
         })
     }
 
@@ -111,6 +116,7 @@ impl AudioPlayer {
         vol_bits: &Arc<AtomicU32>,
         muted: &Arc<AtomicBool>,
         paused: &Arc<AtomicBool>,
+        last_callback: &Arc<Mutex<Option<(std::time::Instant, u64)>>>,
     ) {
         if paused.load(Ordering::Relaxed) {
             data.fill(0.0);
@@ -139,7 +145,12 @@ impl AudioPlayer {
             }
         }
 
-        played_samples.fetch_add(actual_played, Ordering::Relaxed);
+        let total_played = played_samples.fetch_add(actual_played, Ordering::Relaxed) + actual_played;
+        if actual_played > 0 {
+            if let Ok(mut cb) = last_callback.lock() {
+                *cb = Some((std::time::Instant::now(), total_played));
+            }
+        }
     }
 
     pub fn device_name(&self) -> &str {
@@ -154,28 +165,69 @@ impl AudioPlayer {
         self.channels
     }
 
-    /// 向环形缓冲追加待播放的 PCM 采样
+    /// 启动声卡底层拉流播放（对齐 MPV 的 Uncork）
+    pub fn start(&self) -> Result<()> {
+        if !self.started.swap(true, Ordering::SeqCst) {
+            self.stream
+                .play()
+                .map_err(|e| TermpvError::AudioError(format!("启动音频播放失败: {e}")))?;
+            log::info!("音频硬件流已正式触发播放 (Uncork)");
+        }
+        Ok(())
+    }
+
+    /// 向环形缓冲追加待播放的 PCM 采样（达到预卷水位时自适应激活出声）
     pub fn push_samples(&self, samples: &[f32]) {
         let Ok(mut guard) = self.buffer.lock() else {
             return;
         };
         guard.extend(samples);
+        let count = guard.len();
+        drop(guard);
+
+        // 当缓冲了至少 40ms 的音频数据（例如 48000 * 2 * 0.040 = 3840 采样）时，立即启动声卡硬件流
+        let min_start_samples = (self.sample_rate as usize * self.channels as usize * 40) / 1000;
+        if count >= min_start_samples && !self.started.load(Ordering::Relaxed) {
+            let _ = self.start();
+        }
     }
 
     /// 检查声卡拉流是否已经真正激活出声
     pub fn is_active(&self) -> bool {
-        self.played_samples.load(Ordering::Relaxed) > 0 || self.base_pts_us.load(Ordering::Relaxed) > 0
+        self.started.load(Ordering::Relaxed)
+            && (self.played_samples.load(Ordering::Relaxed) > 0
+                || self.base_pts_us.load(Ordering::Relaxed) > 0)
     }
 
-    /// 获取声卡硬件当前物理播放进度（秒）
+    /// 获取声卡硬件当前物理播放进度（秒，带回调间高精度单调时钟平滑插值，消除阶梯跳变）
     pub fn current_pts(&self) -> f64 {
         let played = self.played_samples.load(Ordering::Relaxed);
         let base_us = self.base_pts_us.load(Ordering::Relaxed);
-        let secs_played = (played as f64) / (self.sample_rate as f64 * self.channels as f64);
-        (base_us as f64 / 1_000_000.0) + secs_played
+        let rate_chan = self.sample_rate as f64 * self.channels as f64;
+        let secs_played = (played as f64) / rate_chan;
+
+        // 平滑插值：利用单调时钟平滑两次声卡回调之间的时间间隔，消除阶梯抖动
+        let interp = if let Ok(guard) = self.last_callback.lock() {
+            if let Some((inst, samples_at)) = *guard {
+                if played >= samples_at {
+                    let elapsed = inst.elapsed().as_secs_f64();
+                    // 最多插值到下一次回调周期（约 35ms），防止过度外推
+                    elapsed.min(0.035)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        (base_us as f64 / 1_000_000.0) + secs_played + interp
     }
 
     /// 获取当前环形缓冲已堆积的音频时长（秒，用于流控）
+    #[allow(dead_code)]
     pub fn buffered_duration(&self) -> f64 {
         let len = self.buffer.lock().map(|b| b.len()).unwrap_or(0);
         (len as f64) / (self.sample_rate as f64 * self.channels as f64)
@@ -189,6 +241,9 @@ impl AudioPlayer {
         self.played_samples.store(0, Ordering::Relaxed);
         let us = (target_secs.max(0.0) * 1_000_000.0) as u64;
         self.base_pts_us.store(us, Ordering::Relaxed);
+        if let Ok(mut cb) = self.last_callback.lock() {
+            *cb = None;
+        }
     }
 
     /// 设置播放音量 (0.0 ~ 2.0)
@@ -212,5 +267,10 @@ impl AudioPlayer {
     /// 设置暂停状态
     pub fn set_paused(&self, is_paused: bool) {
         self.paused.store(is_paused, Ordering::Relaxed);
+        if is_paused {
+            let _ = self.stream.pause();
+        } else if self.started.load(Ordering::Relaxed) {
+            let _ = self.stream.play();
+        }
     }
 }

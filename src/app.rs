@@ -144,7 +144,11 @@ impl App {
                             break;
                         }
                         let rem = deadline.saturating_duration_since(Instant::now());
-                        thread::sleep(rem.min(Duration::from_millis(3)));
+                        if rem > Duration::from_millis(4) {
+                            thread::sleep(rem - Duration::from_millis(2));
+                        } else if rem > Duration::from_micros(500) {
+                            thread::yield_now();
+                        }
                     }
                 }
                 SyncDecision::Render => {}
@@ -219,11 +223,17 @@ impl App {
 
         let (target_px_w, target_px_h) = match self.render_engine.current_mode() {
             RenderMode::Kitty => {
-                // 基于终端字符物理像素比（约 9px/列），按实际显示区域自适应缩放（上限 1080P，兼顾极清画质与终端流控）
-                let est_col_width = 9;
-                let max_w = src_w.min(1080);
-                let min_w = 320.min(max_w);
-                let raw_w = (render_cols as u32 * est_col_width).clamp(min_w, max_w);
+                // 基于终端字符物理像素比（通过 window_size 精确感知或合理回退），按实际显示区域 1:1 像素映射
+                let est_col_width = if let Ok(ws) = crossterm::terminal::window_size() {
+                    if ws.columns > 0 && ws.width > 0 {
+                        (ws.width / ws.columns).clamp(6, 32) as u32
+                    } else {
+                        9
+                    }
+                } else {
+                    9
+                };
+                let raw_w = (render_cols as u32 * est_col_width).min(src_w).max(2);
                 let px_w = (raw_w & !1).max(2);
                 let raw_h = ((px_w as f64) / vid_aspect).round() as u32;
                 let px_h = (raw_h & !1).max(2);
@@ -253,12 +263,12 @@ impl App {
     fn schedule_frame_pts(&mut self, frame_pts: f64, audio_pts: Option<f64>) -> SyncDecision {
         if let Some(a_pts) = audio_pts {
             let diff = frame_pts - a_pts;
-            // 画面落后音频超过 80ms：丢帧追赶音频
-            if diff < -0.080 {
+            // 画面落后音频超过 200ms：才丢帧追赶音频（对齐 MPV，容忍微秒级 I/O 抖动，防止误杀帧）
+            if diff < -0.200 {
                 return SyncDecision::Drop;
             }
-            // 画面超前音频超过 2ms：等待音频对齐
-            if diff > 0.002 {
+            // 画面超前音频超过 3ms：等待音频对齐
+            if diff > 0.003 {
                 return SyncDecision::Wait(Duration::from_secs_f64(diff));
             }
             // 准时渲染

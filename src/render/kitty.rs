@@ -1,4 +1,4 @@
-// Kitty 终端图形协议渲染器（基于原子双缓冲 a=t/a=p 与原地快速 Base64 流式直刷，杜绝闪烁并完美兼容现代终端）
+// Kitty 终端图形协议渲染器（对齐 MPV 的 a=T 瞬时流式直刷，零 ID 缓存无显存泄漏，极速平滑呈现）
 use crate::error::Result;
 use crate::render::buffer::RgbFrame;
 use crate::render::Layout;
@@ -7,17 +7,15 @@ use std::io::Write;
 /// Kitty 协议直接流式传输分块大小
 const CHUNK_SIZE: usize = 4096;
 
-/// Kitty 图形渲染器（双缓冲原子上屏，零堆内存重分配）
+/// Kitty 图形渲染器（对齐 MPV 工业级 a=T 瞬时直刷，零堆内存重分配）
 pub struct KittyRenderer {
     b64_buf: Vec<u8>,
-    active_slot: u8,
 }
 
 impl KittyRenderer {
     pub fn new() -> Self {
         Self {
             b64_buf: Vec::with_capacity(4 * 1024 * 1024),
-            active_slot: 0,
         }
     }
 
@@ -32,10 +30,6 @@ impl KittyRenderer {
             return Ok(());
         }
 
-        // 双缓冲轮转：i=1 与 i=2 交替上传
-        let upload_id = if self.active_slot == 0 { 1 } else { 2 };
-        self.active_slot = 1 - self.active_slot;
-
         let start_row = layout.pad_y + 1;
         let start_col = layout.pad_x + 1;
 
@@ -43,32 +37,30 @@ impl KittyRenderer {
         self.b64_buf.clear();
         fast_base64_encode_into(&frame.data, &mut self.b64_buf);
 
-        // 2. 离屏传输整帧像素数据（a=t），静默接收不污染屏幕
+        // 2. 移动光标至左上角起始绘制点
+        write!(writer, "\x1b[{start_row};{start_col}H")?;
+
+        // 3. 对齐 MPV：使用 a=T（Transmit and display immediately），瞬时直刷屏幕
+        // 不分配图片 ID，不建立终端显存常驻，C=1 抑制光标偏移，q=2 静默静音，解决终端 GPU 堆叠与背压卡顿
         self.stream_chunks(
             writer,
-            upload_id,
             frame.width,
             frame.height,
-        )?;
-
-        // 3. 原子化上屏（a=p）覆写 placement (p=1)，C=1 保持光标位置不发生跳动
-        write!(
-            writer,
-            "\x1b[{start_row};{start_col}H\x1b_Ga=p,i={upload_id},p=1,c={},r={},q=2,C=1\x1b\\",
             layout.render_cols,
-            layout.render_rows
+            layout.render_rows,
         )?;
 
         Ok(())
     }
 
-    /// 将 Base64 数据分块直接流式写入输出流（a=t），零临时分配
+    /// 将 Base64 数据分块直接流式写入输出流（a=T），零临时分配
     fn stream_chunks<W: Write>(
         &self,
         writer: &mut W,
-        img_id: u32,
         img_w: u32,
         img_h: u32,
+        render_cols: u16,
+        render_rows: u16,
     ) -> Result<()> {
         let total_len = self.b64_buf.len();
         let mut offset = 0;
@@ -82,7 +74,7 @@ impl KittyRenderer {
             if is_first {
                 write!(
                     writer,
-                    "\x1b_Ga=t,i={img_id},f=24,s={img_w},v={img_h},m={m_flag},q=2;"
+                    "\x1b_Ga=T,f=24,s={img_w},v={img_h},c={render_cols},r={render_rows},C=1,q=2,m={m_flag};"
                 )?;
                 is_first = false;
             } else {
