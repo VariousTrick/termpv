@@ -47,10 +47,19 @@ impl AudioPlayer {
         let sample_rate = supported_config.sample_rate();
         let channels = supported_config.channels();
 
+        // 对齐 MPV：显式设定低延迟紧凑缓冲区（1024 采样，约 21ms），禁止使用默认的 u32::MAX
+        // 避免 PulseAudio/PipeWire 在蓝牙耳机上强制蓄满数百毫秒预缓冲（pre_buffering）才发声
+        let buffer_size = match supported_config.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => {
+                cpal::BufferSize::Fixed(1024.clamp(*min, *max))
+            }
+            cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(1024),
+        };
+
         let stream_config = cpal::StreamConfig {
             channels,
             sample_rate,
-            buffer_size: cpal::BufferSize::Default,
+            buffer_size,
         };
 
         let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 4)));
@@ -185,8 +194,9 @@ impl AudioPlayer {
         let count = guard.len();
         drop(guard);
 
-        // 当缓冲了至少 40ms 的音频数据（例如 48000 * 2 * 0.040 = 3840 采样）时，立即启动声卡硬件流
-        let min_start_samples = (self.sample_rate as usize * self.channels as usize * 40) / 1000;
+        // 当缓冲了至少 150ms 的音频数据（例如 48000 * 2 * 0.150 = 14400 采样，对齐 MPV 的 soft-buffer）时，
+        // 立即启动声卡硬件流，确保底层拉流首包 100% 命中真实音频，杜绝欠载（Underrun）引发蓝牙耳机停顿
+        let min_start_samples = (self.sample_rate as usize * self.channels as usize * 150) / 1000;
         if count >= min_start_samples && !self.started.load(Ordering::Relaxed) {
             let _ = self.start();
         }
