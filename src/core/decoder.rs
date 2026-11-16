@@ -109,6 +109,12 @@ impl VideoDecoder {
             || self.scaler_target_w != target_w
             || self.scaler_target_h != target_h
         {
+            let flags = if target_w < frame.width() / 2 {
+                Flags::AREA | Flags::ACCURATE_RND
+            } else {
+                Flags::BICUBIC | Flags::ACCURATE_RND
+            };
+
             let scaler = ScalerContext::get(
                 frame.format(),
                 frame.width(),
@@ -116,7 +122,7 @@ impl VideoDecoder {
                 Pixel::RGB24,
                 target_w,
                 target_h,
-                Flags::FAST_BILINEAR,
+                flags,
             )
             .map_err(|e| TermpvError::VideoDecodeError(format!("初始化色彩转换器失败: {e}")))?;
 

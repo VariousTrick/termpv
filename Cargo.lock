@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "termpv"
-version = "0.2.2"
+version = "0.2.6"
 dependencies = [
  "clap",
  "cpal",

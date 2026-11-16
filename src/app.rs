@@ -93,9 +93,9 @@ impl App {
                 break;
             }
 
-            // 模式切换时全屏清屏复位，清除旧模式残影
+            // 模式切换时全屏清屏复位，清除旧模式残影与图形
             if mode_changed {
-                write!(out_writer, "\x1b[2J\x1b[1;1H")?;
+                write!(out_writer, "\x1b_Ga=d,d=a,q=2\x1b\\\x1b[2J\x1b[1;1H")?;
                 out_writer.flush()?;
             }
 
@@ -237,8 +237,16 @@ impl App {
 
         let (target_px_w, target_px_h) = match self.render_engine.current_mode() {
             RenderMode::Kitty => {
-                let px_w = (render_cols as u32 * 8).clamp(320, 640);
-                let px_h = (((px_w as f64) / vid_aspect).round() as u32).max(2);
+                // 根据终端网格列数与物理像素估算最佳高清分辨率
+                // 1280x720 在 160 列终端中每字符单元格分配 8 个物理像素，画质晶莹剔透，
+                // 同时将 PTY 单帧数据量从 8.3MB 大幅压制至 3.5MB，杜绝终端 PTY 阻塞导致的掉帧与卡顿
+                let est_col_width = 8;
+                let max_w = src_w.min(1280);
+                let min_w = 320.min(max_w);
+                let raw_w = (render_cols as u32 * est_col_width).clamp(min_w, max_w);
+                let px_w = (raw_w & !1).max(2);
+                let raw_h = ((px_w as f64) / vid_aspect).round() as u32;
+                let px_h = (raw_h & !1).max(2);
                 (px_w, px_h)
             }
             RenderMode::HalfBlock => {

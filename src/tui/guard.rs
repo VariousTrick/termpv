@@ -46,6 +46,10 @@ impl TerminalGuard {
         }
 
         let mut out = stdout();
+        // 解除终端同步刷新锁定（防止崩溃或异常退出时终端画面被锁住）
+        let _ = out.write_all(b"\x1b[?2026l");
+        // 清除终端可能残留的 Kitty 图形协议纹理
+        let _ = out.write_all(b"\x1b_Ga=d,d=a,q=2\x1b\\");
         // \x1b[?7h 恢复终端自动换行
         let _ = out.write_all(b"\x1b[?7h");
         let _ = execute!(out, Show, LeaveAlternateScreen);

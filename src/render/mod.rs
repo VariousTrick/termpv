@@ -56,7 +56,9 @@ impl RenderEngine {
 
         std::env::var("GHOSTTY_RESOURCES_DIR").is_ok()
             || std::env::var("KITTY_WINDOW_ID").is_ok()
-            || std::env::var("TERM").map_or(false, |t| t.contains("kitty") || t.contains("ghostty"))
+            || std::env::var("WEZTERM_PANE").is_ok()
+            || std::env::var("TERM_PROGRAM").map_or(false, |p| p.contains("ghostty") || p == "WezTerm")
+            || std::env::var("TERM").map_or(false, |t| t.contains("kitty") || t.contains("ghostty") || t.contains("wezterm"))
     }
 
     /// 探测终端最佳图形能力

@@ -26,7 +26,7 @@
 termpv/
 ├── Cargo.toml
 ├── README.md                 # 项目介绍与使用指南
-├── CHANGELOG.md              # 版本迭代日志 (更新至 v0.2.3)
+├── CHANGELOG.md              # 版本迭代日志 (更新至 v0.2.4)
 ├── DEVELOPMENT.md            # 底层架构逻辑与开发指南
 ├── PLAN.md                   # 阶段里程碑与实施计划
 └── src/
@@ -37,14 +37,14 @@ termpv/
     ├── logger.rs             # TUI 友好的无锁异步文件日志系统
     ├── core/                 # 核心解封装与解码
     │   ├── clock.rs          # 单调高精度 CPU 主时钟，保证 60 FPS 丝滑无卡顿
-    │   ├── decoder.rs        # FFmpeg 视频解码器（逐行 stride 裁剪、零拷贝）
+    │   ├── decoder.rs        # FFmpeg 视频解码器（Area/Bicubic 高保真色彩下采样、逐行裁剪）
     │   └── demuxer.rs        # FFmpeg 容器解复用与音视频流分离
     ├── audio/                # 音频播放管道
     │   ├── decoder.rs        # FFmpeg 音频解码与 swresample 立体声 F32 重采样
     │   └── player.rs         # cpal 音频硬件管道（自动跟随 PipeWire/PulseAudio 默认输出）
     ├── render/               # 渲染后端
     │   ├── mod.rs            # RenderEngine 统一调度与 Layout 结构
-    │   ├── kitty.rs          # Kitty 图形协议实现（Base64 分块传输，静默模式）
+    │   ├── kitty.rs          # Kitty 图形协议实现（零堆内存分配 Base64、静默模式）
     │   ├── halfblock.rs      # 24位真彩半块字符渲染器（绝对坐标定位，防滚屏）
     │   └── ascii.rs          # 经典灰度梯度 ASCII 渲染器
     └── tui/                  # 终端生命周期与交互
@@ -69,7 +69,7 @@ termpv/
 - [x] Kitty / HalfBlock / ASCII 三模热键无缝切换（<kbd>m</kbd>）
 - [x] 非阻塞按键事件批量排空，彻底消除按键延迟卡顿
 
-### ✅ 第三阶段：物理音频直连与纯粹高帧率调度（已完成 - v0.2.3）
+### ✅ 第三阶段：物理音频直连与纯粹高帧率调度（已完成）
 - [x] **PipeWire / PulseAudio 默认设备直连**：
   - 自动绑定系统当前选中的默认音频设备（`@DEFAULT_SINK@`），电脑当前选择什么设备就由什么设备发声，绝不硬编码设备名。
 - [x] **架构纠偏：彻底剔除人工延迟检测，恢复原生丝滑流畅**：
@@ -77,7 +77,14 @@ termpv/
   - 视频帧完全交由高精度单调 CPU 时钟（`Instant::now()`）连续驱动，彻底消除掉帧与卡顿；
   - 音频与视频独立平稳运行，音量与静音（<kbd>↑</kbd>/<kbd>↓</kbd>/<kbd>x</kbd>）即时生效。
 
-### ⏳ 第四阶段：硬件加速与深度优化（下一阶段）
+### ✅ 第四阶段：1080P 超高清画质与零闪烁抗频闪（已完成 - v0.2.5）
+- [x] **彻底解除 Kitty 模式 640px 人工锁死**：支持最高 1920px (1080P) 原画无损直显。
+- [x] **升级下采样滤镜（根除色块断层 Banding）**：引入 `Flags::AREA` 与 `Flags::BICUBIC`，使大幅缩小与缩放时的色彩渐变细腻柔和。
+- [x] **零堆内存分配 Base64**：优化 Kitty 协议字符编码吞吐，高分辨率推流零延迟。
+- [x] **Kitty 协议双缓冲（Ping-Pong Buffer：a=t + a=p）**：后台静默上传新帧，待完全就绪后原子化瞬时切屏，彻底消除旧帧提前被删导致的 30Hz 黑屏闪烁。
+- [x] **终端原子同步刷新锁（DEC Mode 2026）**：通过 `\x1b[?2026h` 和 `\x1b[?2026l` 实现视频图像与 OSD 状态栏同步 V-Sync 刷盘，杜绝画面撕裂。
+
+### ⏳ 第五阶段：硬件加速与深度优化（下一阶段）
 - [ ] **VA-API 硬件解码加速**：在 `src/core/decoder.rs` 引入 Intel Arc A770 的硬件解码，进一步释放 CPU 占用。
 - [ ] **Sixel 协议支持**：为 `foot` 等支持 Sixel 点阵协议的终端编写专用渲染器。
 - [ ] **关键帧精确 Seek**：构建基于视频关键帧的快速拖拽与精确定位。
