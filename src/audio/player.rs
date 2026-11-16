@@ -1,0 +1,184 @@
+// 基于 cpal 的音频设备输出与播放模块（自动绑定系统默认输出设备，无人工延迟介入）
+use crate::error::{Result, TermpvError};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::Stream;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// 音频硬件播放控制器
+pub struct AudioPlayer {
+    _stream: Stream,
+    device_name: String,
+    sample_rate: u32,
+    channels: u16,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    #[allow(dead_code)]
+    played_samples: Arc<AtomicU64>,
+    volume_bits: Arc<AtomicU32>,
+    muted: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+}
+
+impl AudioPlayer {
+    /// 初始化音频输出设备（优先选用 PulseAudio/PipeWire 确保系统当前默认设备正常发声）
+    pub fn new() -> Result<Self> {
+        let host = if cpal::available_hosts().contains(&cpal::HostId::PulseAudio) {
+            cpal::host_from_id(cpal::HostId::PulseAudio).unwrap_or_else(|_| cpal::default_host())
+        } else {
+            cpal::default_host()
+        };
+
+        log::info!("正在通过音频宿主 [{:?}] 获取系统默认音频输出设备...", host.id());
+
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| TermpvError::AudioError("未检测到可用的系统默认音频输出设备".into()))?;
+
+        let device_name = device.to_string();
+        log::info!("成功绑定音频输出设备: [{}]", device_name);
+
+        let supported_config = device
+            .default_output_config()
+            .map_err(|e| TermpvError::AudioError(format!("获取音频配置失败: {e}")))?;
+
+        let sample_rate = supported_config.sample_rate();
+        let channels = supported_config.channels();
+
+        let stream_config = cpal::StreamConfig {
+            channels,
+            sample_rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+
+        let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 4)));
+        let played_samples = Arc::new(AtomicU64::new(0));
+        let volume_bits = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let muted = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
+
+        let buf_clone = Arc::clone(&buffer);
+        let played_clone = Arc::clone(&played_samples);
+        let vol_clone = Arc::clone(&volume_bits);
+        let mute_clone = Arc::clone(&muted);
+        let paused_clone = Arc::clone(&paused);
+
+        // 创建音频硬件拉流回调（纯粹流填充，不干涉视频时钟）
+        let stream = device
+            .build_output_stream(
+                stream_config,
+                move |data: &mut [f32], _| {
+                    Self::audio_callback(
+                        data,
+                        &buf_clone,
+                        &played_clone,
+                        &vol_clone,
+                        &mute_clone,
+                        &paused_clone,
+                    );
+                },
+                move |err| {
+                    log::warn!("音频输出设备流异常: {err}");
+                },
+                None,
+            )
+            .map_err(|e| TermpvError::AudioError(format!("构建音频输出流失败: {e}")))?;
+
+        stream
+            .play()
+            .map_err(|e| TermpvError::AudioError(format!("启动音频播放失败: {e}")))?;
+
+        Ok(Self {
+            _stream: stream,
+            device_name,
+            sample_rate,
+            channels,
+            buffer,
+            played_samples,
+            volume_bits,
+            muted,
+            paused,
+        })
+    }
+
+    /// 核心声卡数据填充回调（运行于高优先级音频线程）
+    fn audio_callback(
+        data: &mut [f32],
+        buffer: &Arc<Mutex<VecDeque<f32>>>,
+        played_samples: &Arc<AtomicU64>,
+        vol_bits: &Arc<AtomicU32>,
+        muted: &Arc<AtomicBool>,
+        paused: &Arc<AtomicBool>,
+    ) {
+        if paused.load(Ordering::Relaxed) {
+            data.fill(0.0);
+            return;
+        }
+
+        let is_muted = muted.load(Ordering::Relaxed);
+        let vol = f32::from_bits(vol_bits.load(Ordering::Relaxed));
+        let gain = if is_muted { 0.0 } else { vol };
+
+        let mut guard = match buffer.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                data.fill(0.0);
+                return;
+            }
+        };
+
+        let mut actual_played = 0u64;
+        for sample in data.iter_mut() {
+            if let Some(s) = guard.pop_front() {
+                *sample = s * gain;
+                actual_played += 1;
+            } else {
+                *sample = 0.0;
+            }
+        }
+
+        played_samples.fetch_add(actual_played, Ordering::Relaxed);
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    /// 向环形缓冲追加待播放的 PCM 采样
+    pub fn push_samples(&self, samples: &[f32]) {
+        let Ok(mut guard) = self.buffer.lock() else {
+            return;
+        };
+        guard.extend(samples);
+    }
+
+    /// 执行 Seek 时重置音频缓冲
+    pub fn seek_to(&self, _target_secs: f64) {
+        if let Ok(mut guard) = self.buffer.lock() {
+            guard.clear();
+        }
+    }
+
+    /// 设置播放音量 (0.0 ~ 2.0)
+    pub fn set_volume(&self, volume: f32) {
+        self.volume_bits.store(volume.to_bits(), Ordering::Relaxed);
+    }
+
+    /// 设置静音状态
+    pub fn set_mute(&self, is_muted: bool) {
+        self.muted.store(is_muted, Ordering::Relaxed);
+    }
+
+    /// 设置暂停状态
+    pub fn set_paused(&self, is_paused: bool) {
+        self.paused.store(is_paused, Ordering::Relaxed);
+    }
+}

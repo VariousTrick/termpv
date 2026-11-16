@@ -1,0 +1,110 @@
+// 渲染系统核心门面与抽象 Trait
+pub mod ascii;
+pub mod buffer;
+pub mod halfblock;
+pub mod kitty;
+
+use crate::config::RenderMode;
+use crate::error::Result;
+use crate::render::ascii::AsciiRenderer;
+use crate::render::buffer::RgbFrame;
+use crate::render::halfblock::HalfBlockRenderer;
+use crate::render::kitty::KittyRenderer;
+use std::io::Write;
+
+/// 屏幕布局与居中排版参数
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    pub render_cols: u16,
+    pub render_rows: u16,
+    pub pad_x: u16,
+    pub pad_y: u16,
+    pub term_w: u16,
+    pub term_h: u16,
+}
+
+/// 综合渲染调度器
+pub struct RenderEngine {
+    current_mode: RenderMode,
+    halfblock: HalfBlockRenderer,
+    ascii: AsciiRenderer,
+    kitty: KittyRenderer,
+}
+
+impl RenderEngine {
+    /// 初始化渲染引擎，支持自动探测终端环境
+    pub fn new(preferred: RenderMode) -> Self {
+        let active_mode = match preferred {
+            RenderMode::Auto => Self::detect_best_mode(),
+            specific => specific,
+        };
+
+        Self {
+            current_mode: active_mode,
+            halfblock: HalfBlockRenderer::new(),
+            ascii: AsciiRenderer::new(),
+            kitty: KittyRenderer::new(),
+        }
+    }
+
+    /// 检查终端是否支持 Kitty 图形协议
+    pub fn supports_kitty() -> bool {
+        // VSCode 内置终端目前对 Kitty 协议支持不完整
+        if std::env::var("TERM_PROGRAM").map_or(false, |p| p == "vscode") {
+            return false;
+        }
+
+        std::env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+            || std::env::var("KITTY_WINDOW_ID").is_ok()
+            || std::env::var("TERM").map_or(false, |t| t.contains("kitty") || t.contains("ghostty"))
+    }
+
+    /// 探测终端最佳图形能力
+    fn detect_best_mode() -> RenderMode {
+        if Self::supports_kitty() {
+            return RenderMode::Kitty;
+        }
+
+        RenderMode::HalfBlock
+    }
+
+    /// 智能轮换下一渲染模式
+    pub fn cycle_mode(&mut self) -> RenderMode {
+        let has_kitty = Self::supports_kitty();
+
+        self.current_mode = match self.current_mode {
+            RenderMode::HalfBlock => RenderMode::Ascii,
+            RenderMode::Ascii => {
+                if has_kitty {
+                    RenderMode::Kitty
+                } else {
+                    RenderMode::HalfBlock
+                }
+            }
+            RenderMode::Kitty => RenderMode::HalfBlock,
+            _ => RenderMode::HalfBlock,
+        };
+
+        self.current_mode
+    }
+
+    /// 获取当前模式
+    pub fn current_mode(&self) -> RenderMode {
+        self.current_mode
+    }
+
+    /// 渲染当前帧到终端（结合 Layout 居中布局）
+    pub fn render_frame<W: Write>(
+        &mut self,
+        frame: &RgbFrame,
+        layout: &Layout,
+        writer: &mut W,
+    ) -> Result<()> {
+        match self.current_mode {
+            RenderMode::Kitty => self.kitty.render(frame, layout, writer),
+            RenderMode::HalfBlock => self.halfblock.render(frame, layout, writer),
+            RenderMode::Ascii => self.ascii.render(frame, layout, writer),
+            _ => self.halfblock.render(frame, layout, writer),
+        }
+    }
+}
