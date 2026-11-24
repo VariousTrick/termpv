@@ -40,8 +40,17 @@ impl App {
 
     /// 启动应用主生命周期
     pub fn run(&mut self) -> Result<()> {
-        if !self.config.file.exists() {
+        let path_str = self.config.file.to_string_lossy();
+        let is_network_url = path_str.starts_with("http://")
+            || path_str.starts_with("https://")
+            || path_str.starts_with("rtsp://")
+            || path_str.starts_with("rtmp://");
+        if !is_network_url && !self.config.file.exists() {
             return Err(TermpvError::FileNotFound(self.config.file.clone()));
+        }
+
+        if is_network_url {
+            eprintln!("\x1b[36m🌐 正在连接网络媒体流并解析元信息，请稍候...\x1b[0m");
         }
 
         // 初始化 FFmpeg

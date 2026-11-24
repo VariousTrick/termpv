@@ -93,18 +93,26 @@ impl PlaybackPipeline {
         let source_h = video_decoder.source_height();
 
         // 3. 构建线程间通信通道与共享环形缓冲
-        // 视频数据包通道（包含 seek generation 代数，有界容量 30，实现天然背压）
+        let path_str = path.as_ref().to_string_lossy();
+        let is_network = path_str.starts_with("http://")
+            || path_str.starts_with("https://")
+            || path_str.starts_with("rtsp://")
+            || path_str.starts_with("rtmp://");
+
+        // 视频数据包通道（网络流使用 300 包约 10~15 秒预读大缓冲抗抖动，本地流保持 30 包低内存占用）
+        let packet_cap = if is_network { 300 } else { 30 };
         let (video_packet_tx, video_packet_rx): (
             SyncSender<(u64, Option<Packet>)>,
             Receiver<(u64, Option<Packet>)>,
-        ) = mpsc::sync_channel(30);
+        ) = mpsc::sync_channel(packet_cap);
 
         let (demux_cmd_tx, demux_cmd_rx) = mpsc::channel();
         let (video_cmd_tx, video_cmd_rx) = mpsc::channel();
 
-        // 解码完成的 RGB 帧环形缓冲队列（存储 (generation, RgbFrame)，最大 12 帧，防突发卡顿）
+        // 解码完成的 RGB 帧环形缓冲队列（存储 (generation, RgbFrame)，最大 16~24 帧，防突发卡顿）
+        let frame_cap = if is_network { 24 } else { 16 };
         let frame_queue = Arc::new((
-            Mutex::new(VecDeque::<(u64, RgbFrame)>::with_capacity(16)),
+            Mutex::new(VecDeque::<(u64, RgbFrame)>::with_capacity(frame_cap)),
             Condvar::new(),
         ));
         let target_res = Arc::new(Mutex::new((source_w, source_h)));

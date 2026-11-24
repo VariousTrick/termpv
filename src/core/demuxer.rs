@@ -22,10 +22,32 @@ pub struct Demuxer {
 }
 
 impl Demuxer {
-    /// 打开媒体文件并解析流元信息
+    /// 打开媒体文件并解析流元信息（支持本地文件与 HTTP/HTTPS 网络流）
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let input_ctx = ffmpeg_next::format::input(&path)
-            .map_err(|e| TermpvError::DemuxFailed(format!("无法打开媒体文件: {e}")))?;
+        let path_ref = path.as_ref();
+        let path_str = path_ref.to_string_lossy();
+        let is_network = path_str.starts_with("http://")
+            || path_str.starts_with("https://")
+            || path_str.starts_with("rtsp://")
+            || path_str.starts_with("rtmp://");
+
+        let input_ctx = if is_network {
+            let mut opts = ffmpeg_next::Dictionary::new();
+            // 注入通用浏览器 User-Agent，避免 PikPak/网盘 CDN 阻断请求
+            opts.set(
+                "user_agent",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            );
+            opts.set("probesize", "1048576"); // 1MB 探测限制，大幅加速网络流嗅探建连
+            opts.set("analyzeduration", "1000000"); // 1s 分析窗口
+            opts.set("reconnect", "1"); // 网络抖动时自动重连
+            opts.set("reconnect_streamed", "1");
+            opts.set("reconnect_delay_max", "5");
+            ffmpeg_next::format::input_with_dictionary(&path_ref, opts)
+        } else {
+            ffmpeg_next::format::input(&path_ref)
+        }
+        .map_err(|e| TermpvError::DemuxFailed(format!("无法打开媒体文件/网络流: {e}")))?;
 
         let video_stream_index = input_ctx.streams().best(Type::Video).map(|s| s.index());
         let audio_stream_index = input_ctx.streams().best(Type::Audio).map(|s| s.index());

@@ -27,12 +27,14 @@
 | 按键 | 功能描述 |
 | :--- | :--- |
 | <kbd>Space</kbd> | 暂停 / 恢复播放 |
+| <kbd>↑</kbd> / <kbd>↓</kbd> | **大步跨越快进 60 秒 / 快退 60 秒** |
 | <kbd>→</kbd> / <kbd>l</kbd> | 快进 5 秒 / 10 秒 |
 | <kbd>←</kbd> / <kbd>h</kbd> | 快退 5 秒 / 10 秒 |
-| <kbd>↑</kbd> / <kbd>↓</kbd> | 音量增加 / 减小 5% |
+| <kbd>+</kbd> / <kbd>=</kbd> / <kbd>0</kbd> | 音量增加 5% |
+| <kbd>-</kbd> / <kbd>_</kbd> / <kbd>9</kbd> | 音量减小 5% |
 | <kbd>x</kbd> | 一键静音 / 恢复音量 |
 | <kbd>m</kbd> | **实时无缝轮换渲染模式**（Kitty ⇄ Half-Block ⇄ ASCII） |
-| <kbd>Tab</kbd> / <kbd>o</kbd> | 开启 / 关闭底部 OSD 状态与进度条面板 |
+| <kbd>Tab</kbd> / <kbd>o</kbd> | 开启 / 关闭底部 OSD 极简 HUD 进度条 |
 | <kbd>q</kbd> / <kbd>Esc</kbd> | 安全退出播放器 |
 
 ---
@@ -52,8 +54,11 @@ sudo pacman -S ffmpeg clang
 # 克隆/进入项目目录
 cd /home/arch/Downloads/vscode/termpv
 
-# 启动播放（支持 MP4、MKV、AVI、FLV、WebM 等任意格式，自动跟随系统默认音频设备）
+# 启动本地播放（支持 MP4、MKV、AVI、FLV、WebM 等任意格式，自动跟随系统默认音频设备）
 cargo run --release -- /home/arch/Downloads/test.mp4
+
+# 播放网络直链流（支持 PikPak、Amane 刮削源、HTTP/HTTPS/RTSP/RTMP，智能 Range 分片与 300 包防抖缓冲）
+cargo run --release -- "https://example.com/video.mp4"
 
 # 指定初始渲染模式（可选：auto, kitty, sixel, half-block, ascii）
 cargo run --release -- /home/arch/Downloads/test.mp4 -m half-block
