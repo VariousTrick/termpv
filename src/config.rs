@@ -22,9 +22,13 @@ pub enum RenderMode {
 #[derive(Debug, Parser, Clone)]
 #[command(name = "termpv", version, about = "高性能多模式终端视频播放器", long_about = None)]
 pub struct Config {
-    /// 视频/音频媒体文件路径
+    /// 视频/音频媒体文件路径（留空则进入交互式 TUI 启动器菜单）
     #[arg(value_name = "FILE")]
-    pub file: PathBuf,
+    pub file: Option<PathBuf>,
+
+    /// 指定起始播放时间（秒，用于断点续播）
+    #[arg(long = "start", value_name = "SECONDS")]
+    pub start: Option<f64>,
 
     /// 初始渲染模式 (auto, kitty, sixel, half-block, ascii)
     #[arg(short = 'm', long = "mode", value_enum, default_value_t = RenderMode::Auto)]

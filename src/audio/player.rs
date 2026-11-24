@@ -243,6 +243,33 @@ impl AudioPlayer {
         (len as f64) / (self.sample_rate as f64 * self.channels as f64)
     }
 
+    /// 内存缓存内快速跳跃（直接裁切当前已解码的 PCM 采样，无需清空重置声卡）
+    pub fn skip_to(&self, target_secs: f64) -> bool {
+        let current = self.current_pts();
+        if target_secs <= current {
+            return false;
+        }
+        let delta = target_secs - current;
+        let rate_chan = self.sample_rate as f64 * self.channels as f64;
+        let drop_samples = (delta * rate_chan).round() as usize;
+
+        let Ok(mut guard) = self.buffer.lock() else {
+            return false;
+        };
+
+        if drop_samples < guard.len() {
+            guard.drain(0..drop_samples);
+            let us_added = (drop_samples as f64 / rate_chan * 1_000_000.0) as u64;
+            self.base_pts_us.fetch_add(us_added, Ordering::Relaxed);
+            if let Ok(mut cb) = self.last_callback.lock() {
+                *cb = None;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// 执行 Seek 时重置音频缓冲并更新基准时间戳
     pub fn seek_to(&self, target_secs: f64) {
         if let Ok(mut guard) = self.buffer.lock() {

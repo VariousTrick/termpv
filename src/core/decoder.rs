@@ -55,6 +55,10 @@ impl VideoDecoder {
         self.source_h
     }
 
+    pub fn time_base(&self) -> f64 {
+        self.time_base
+    }
+
     /// 向解码器投递媒体数据包并提取解码后的 RGB 帧
     pub fn decode_packet(
         &mut self,

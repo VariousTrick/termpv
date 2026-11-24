@@ -18,6 +18,7 @@ use std::time::Duration;
 #[derive(Debug, Clone, Copy)]
 enum PipelineCmd {
     Seek(f64, u64),
+    FastForwardInCache(f64, u64),
     SetResolution(u32, u32),
     Stop,
 }
@@ -236,6 +237,9 @@ impl PlaybackPipeline {
                         buffered_bytes.store(0, Ordering::Relaxed);
                         latest_demux_pts.store(pts.to_bits(), Ordering::Relaxed);
                     }
+                    PipelineCmd::FastForwardInCache(_, _) => {
+                        // 内存命中快进：底层 Demuxer 保持网络连接不断流，继续顺序读取后续数据包
+                    }
                     PipelineCmd::Stop => {
                         running.store(false, Ordering::Relaxed);
                         return;
@@ -311,6 +315,8 @@ impl PlaybackPipeline {
         running: Arc<AtomicBool>,
     ) {
         let mut current_gen = 0u64;
+        let mut fast_forward_target: Option<f64> = None;
+        let time_base = decoder.time_base();
 
         while running.load(Ordering::Relaxed) {
             // 1. 处理控制指令
@@ -318,6 +324,7 @@ impl PlaybackPipeline {
                 match cmd {
                     PipelineCmd::Seek(_, generation) => {
                         current_gen = generation;
+                        fast_forward_target = None;
                         decoder.flush();
                         // 彻底排空 packet_rx 中可能积压的旧代数据包或 EOF 哨兵，防止解码脏包
                         while let Ok(_) = packet_rx.try_recv() {}
@@ -325,6 +332,94 @@ impl PlaybackPipeline {
                         let mut q = lock.lock().unwrap();
                         q.clear();
                         cvar.notify_all();
+                    }
+                    PipelineCmd::FastForwardInCache(target, generation) => {
+                        current_gen = generation;
+                        decoder.flush();
+                        {
+                            let (lock, cvar) = &*frame_queue;
+                            let mut q = lock.lock().unwrap();
+                            q.clear();
+                            cvar.notify_all();
+                        }
+
+                        // 收集并过滤当前在队列中等待处理的数据包：
+                        // 凡是在最近一个关键帧之前的过期数据包直接原子丢弃，绝不浪费 CPU 解码算力；
+                        // 保留从最近关键帧到目标 PTS 的数据包，用于快速预卷解码参考帧
+                        let mut pending_gop: Vec<Packet> = Vec::new();
+                        let mut latest_key_pts: Option<f64> = None;
+
+                        while let Ok((pkt_gen, packet_opt)) = packet_rx.try_recv() {
+                            if pkt_gen < current_gen {
+                                if let Some(p) = &packet_opt {
+                                    let size = p.size();
+                                    let _ = buffered_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                                        Some(b.saturating_sub(size))
+                                    });
+                                }
+                                continue;
+                            }
+
+                            if let Some(packet) = packet_opt {
+                                let pts_secs = packet.pts().map(|p| (p as f64) * time_base).unwrap_or(0.0);
+                                if pts_secs < target {
+                                    if packet.is_key() {
+                                        // 发现目标前的一个关键帧：丢弃该关键帧之前的所有积累包
+                                        for p in pending_gop.drain(..) {
+                                            let size = p.size();
+                                            let _ = buffered_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                                                Some(b.saturating_sub(size))
+                                            });
+                                        }
+                                        latest_key_pts = Some(pts_secs);
+                                        pending_gop.push(packet);
+                                    } else if latest_key_pts.is_some() {
+                                        pending_gop.push(packet);
+                                    } else {
+                                        // 尚无关键帧且在目标之前的废包，直接丢弃
+                                        let size = packet.size();
+                                        let _ = buffered_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                                            Some(b.saturating_sub(size))
+                                        });
+                                    }
+                                } else {
+                                    // 达到或超过目标 PTS 的数据包
+                                    pending_gop.push(packet);
+                                    break;
+                                }
+                            }
+                        }
+
+                        let (target_w, target_h) = *target_res.lock().unwrap();
+                        let mut reached = false;
+
+                        // 快速预卷解码这一组 GOP 数据包
+                        for pkt in pending_gop {
+                            let size = pkt.size();
+                            let _ = buffered_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                                Some(b.saturating_sub(size))
+                            });
+
+                            if target_w > 0 && target_h > 0 {
+                                if let Ok(frames) = decoder.decode_packet(&pkt, target_w, target_h) {
+                                    for frame in frames {
+                                        if frame.pts >= target {
+                                            reached = true;
+                                            let (lock, cvar) = &*frame_queue;
+                                            let mut q = lock.lock().unwrap();
+                                            q.push_back((current_gen, frame));
+                                            cvar.notify_all();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if !reached {
+                            fast_forward_target = Some(target);
+                        } else {
+                            fast_forward_target = None;
+                        }
                     }
                     PipelineCmd::SetResolution(w, h) => {
                         let (lock, cvar) = &*frame_queue;
@@ -379,6 +474,14 @@ impl PlaybackPipeline {
 
             // 4. 将成品帧推入有界环形缓冲队列（最多 12 帧，防止显存无度膨胀）
             for frame in frames {
+                if let Some(target) = fast_forward_target {
+                    if frame.pts < target {
+                        continue;
+                    } else {
+                        fast_forward_target = None;
+                    }
+                }
+
                 let (lock, cvar) = &*frame_queue;
                 let mut q = lock.lock().unwrap();
                 while q.len() >= 12 && running.load(Ordering::Relaxed) {
@@ -456,19 +559,44 @@ impl PlaybackPipeline {
         cvar.notify_all();
     }
 
-    /// 执行 Seek 快进/快退（带 Seek 代数标记）
-    pub fn seek(&self, target_secs: f64, generation: u64) {
+    /// 执行 Seek 快进/快退（带 Seek 代数标记与内存缓存智能探测）
+    /// 若目标落入当前已解封装的内存缓冲区间，执行零延迟纯内存跳转并返回 true；
+    /// 否则触发底层 Demuxer 重寻址并返回 false
+    pub fn seek(&self, target_secs: f64, generation: u64, current_pts: f64) -> bool {
         let target = target_secs.clamp(0.0, self.duration_secs);
         // 主线程发起 Seek 时第一时间原子重置 EOF 状态，杜绝主渲染循环在换流真空期误判退出
         self.is_eof.store(false, Ordering::SeqCst);
 
-        let _ = self.demux_cmd_tx.send(PipelineCmd::Seek(target, generation));
-        let _ = self.video_cmd_tx.send(PipelineCmd::Seek(target, generation));
+        let latest_bits = self.latest_demux_pts.load(Ordering::Relaxed);
+        let latest_pts = f64::from_bits(latest_bits);
 
-        let (lock, cvar) = &*self.frame_queue;
-        let mut q = lock.lock().unwrap();
-        q.clear();
-        cvar.notify_all();
+        // 检查是否满足内存缓存零等待跳跃：
+        // 1. 必须是向前快进（因为 FIFO 队列不回退已销毁的数据包）
+        // 2. 目标时间戳在已缓冲范围内且留有至少 1.5 秒安全余量
+        // 3. 音频声卡切片能够成功就地裁切已解码 PCM
+        let can_cache_skip = if target > current_pts && (target + 1.5) < latest_pts {
+            if let Some(player) = &self.audio_player {
+                player.skip_to(target)
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        if can_cache_skip {
+            let _ = self.video_cmd_tx.send(PipelineCmd::FastForwardInCache(target, generation));
+            true
+        } else {
+            let _ = self.demux_cmd_tx.send(PipelineCmd::Seek(target, generation));
+            let _ = self.video_cmd_tx.send(PipelineCmd::Seek(target, generation));
+
+            let (lock, cvar) = &*self.frame_queue;
+            let mut q = lock.lock().unwrap();
+            q.clear();
+            cvar.notify_all();
+            false
+        }
     }
 
     /// 获取当前流缓冲统计（缓冲剩余秒数, 缓冲总字节大小）

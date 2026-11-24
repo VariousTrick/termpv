@@ -38,15 +38,18 @@ impl App {
         }
     }
 
-    /// 启动应用主生命周期
-    pub fn run(&mut self) -> Result<()> {
-        let path_str = self.config.file.to_string_lossy();
+    /// 启动应用主生命周期，返回 (最终播放时间戳, 总时长)
+    pub fn run(&mut self) -> Result<(f64, f64)> {
+        let file_path = self.config.file.clone().ok_or_else(|| {
+            TermpvError::FileNotFound(std::path::PathBuf::from("<未指定媒体目标>"))
+        })?;
+        let path_str = file_path.to_string_lossy();
         let is_network_url = path_str.starts_with("http://")
             || path_str.starts_with("https://")
             || path_str.starts_with("rtsp://")
             || path_str.starts_with("rtmp://");
-        if !is_network_url && !self.config.file.exists() {
-            return Err(TermpvError::FileNotFound(self.config.file.clone()));
+        if !is_network_url && !file_path.exists() {
+            return Err(TermpvError::FileNotFound(file_path));
         }
 
         if is_network_url {
@@ -58,8 +61,20 @@ impl App {
             .map_err(|e| TermpvError::FfmpegError(format!("FFmpeg 初始化失败: {e}")))?;
 
         // 启动工业级多线程解耦管线（后台启动 Demuxer + AudioWorker + VideoWorker）
-        let pipeline = PlaybackPipeline::new(&self.config.file, &self.config)?;
-        self.osd_state.total_secs = pipeline.duration();
+        let pipeline = PlaybackPipeline::new(&file_path, &self.config)?;
+        let duration = pipeline.duration();
+        self.osd_state.total_secs = duration;
+
+        // 若指定了起始断点（例如断点续播），立即执行初始 Seek
+        if let Some(start_secs) = self.config.start {
+            if start_secs > 0.0 {
+                let max_target = (duration - 0.5).max(0.0);
+                let target = start_secs.clamp(0.0, max_target);
+                self.current_seek_gen += 1;
+                self.pending_seek_snap = true;
+                pipeline.seek(target, self.current_seek_gen, 0.0);
+            }
+        }
 
         log::info!(
             "多线程播放管线已就绪: 时长={:.2}s, 视频分辨率={}x{}",
@@ -89,6 +104,7 @@ impl App {
         pipeline.set_target_resolution(init_w, init_h);
 
         let mut last_layout = initial_layout;
+        let mut final_pts = self.config.start.unwrap_or(0.0);
 
         while self.running {
             // 1. 处理用户键盘事件
@@ -231,11 +247,12 @@ impl App {
                 .render_frame(&frame, &last_layout, &mut out_writer)?;
 
             let current_pts = audio_pts.unwrap_or(frame.pts);
+            final_pts = current_pts;
             self.render_osd(cur_term_w, cur_term_h, current_pts, &pipeline, &mut out_writer)?;
             out_writer.flush()?;
         }
 
-        Ok(())
+        Ok((final_pts, duration))
     }
 
     /// 严格遵循物理字符几何与 Contain 算法计算等比居中尺寸（自适应保留黑边，100% 杜绝裁切失真）
@@ -434,7 +451,10 @@ impl App {
                     self.osd_state.trigger_seek(delta_secs);
                     self.current_seek_gen += 1;
                     self.pending_seek_snap = true;
-                    pipeline.seek(target, self.current_seek_gen);
+                    let hit_cache = pipeline.seek(target, self.current_seek_gen, current);
+                    if hit_cache {
+                        log::info!("快进命中内存缓冲，执行零等待内存跳转至 {:.2}s", target);
+                    }
                 }
                 PlayerAction::None => {}
             }
