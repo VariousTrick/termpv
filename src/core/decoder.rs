@@ -55,6 +55,7 @@ impl VideoDecoder {
         self.source_h
     }
 
+    #[allow(dead_code)]
     pub fn time_base(&self) -> f64 {
         self.time_base
     }

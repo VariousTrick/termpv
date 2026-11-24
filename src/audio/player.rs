@@ -244,6 +244,7 @@ impl AudioPlayer {
     }
 
     /// 内存缓存内快速跳跃（直接裁切当前已解码的 PCM 采样，无需清空重置声卡）
+    #[allow(dead_code)]
     pub fn skip_to(&self, target_secs: f64) -> bool {
         let current = self.current_pts();
         if target_secs <= current {

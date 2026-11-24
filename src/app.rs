@@ -72,7 +72,8 @@ impl App {
                 let target = start_secs.clamp(0.0, max_target);
                 self.current_seek_gen += 1;
                 self.pending_seek_snap = true;
-                pipeline.seek(target, self.current_seek_gen, 0.0);
+                self.clock.seek_to(target);
+                pipeline.seek(target, self.current_seek_gen);
             }
         }
 
@@ -194,15 +195,8 @@ impl App {
                     continue;
                 }
                 SyncDecision::Wait(dur) => {
-                    // 若刚刚 Seek 完毕（处于前 250ms 缓冲期内），防止音频硬件延迟卡死视频流
-                    let is_seeking = self
-                        .last_seek_at
-                        .map_or(false, |t| t.elapsed() < Duration::from_millis(250));
-                    let effective_dur = if is_seeking {
-                        dur.min(Duration::from_millis(16))
-                    } else {
-                        dur
-                    };
+                    // 绝不无上限睡眠！无论任何原因，单次帧等待绝不能超过 35ms（约一帧），杜绝网络抖动引发画面冻结
+                    let effective_dur = dur.min(Duration::from_millis(35));
 
                     let deadline = Instant::now() + effective_dur;
                     while Instant::now() < deadline {
@@ -372,13 +366,17 @@ impl App {
     fn schedule_frame_pts(&mut self, frame_pts: f64, audio_pts: Option<f64>) -> SyncDecision {
         if let Some(a_pts) = audio_pts {
             let diff = frame_pts - a_pts;
-            // 画面落后音频超过 200ms：才丢帧追赶音频（对齐 MPV，容忍微秒级 I/O 抖动，防止误杀帧）
-            if diff < -0.200 {
+            // 关键保护：若音画差距过大（> 250ms，如刚 Seek 或网络流阶段性抖动），绝不长休眠或无端丢帧，直接准时渲染！
+            if diff.abs() > 0.250 {
+                return SyncDecision::Render;
+            }
+            // 画面落后音频超过 50ms：才丢帧追赶音频
+            if diff < -0.050 {
                 return SyncDecision::Drop;
             }
-            // 画面超前音频超过 3ms：等待音频对齐
+            // 画面超前音频超过 3ms：微等待音频对齐（上限严格限制在 35ms，绝不卡死画面）
             if diff > 0.003 {
-                return SyncDecision::Wait(Duration::from_secs_f64(diff));
+                return SyncDecision::Wait(Duration::from_secs_f64(diff).min(Duration::from_millis(35)));
             }
             // 准时渲染
             SyncDecision::Render
@@ -451,10 +449,8 @@ impl App {
                     self.osd_state.trigger_seek(delta_secs);
                     self.current_seek_gen += 1;
                     self.pending_seek_snap = true;
-                    let hit_cache = pipeline.seek(target, self.current_seek_gen, current);
-                    if hit_cache {
-                        log::info!("快进命中内存缓冲，执行零等待内存跳转至 {:.2}s", target);
-                    }
+                    self.clock.seek_to(target);
+                    pipeline.seek(target, self.current_seek_gen);
                 }
                 PlayerAction::None => {}
             }
