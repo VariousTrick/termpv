@@ -114,7 +114,7 @@ impl App {
                 let current_pts = pipeline
                     .current_audio_pts()
                     .unwrap_or_else(|| self.clock.current_time());
-                self.render_osd(cur_term_w, cur_term_h, current_pts, &mut out_writer)?;
+                self.render_osd(cur_term_w, cur_term_h, current_pts, &pipeline, &mut out_writer)?;
                 out_writer.flush()?;
                 thread::sleep(Duration::from_millis(16));
                 continue;
@@ -163,7 +163,7 @@ impl App {
                 self.render_engine
                     .render_frame(&frame, &last_layout, &mut out_writer)?;
 
-                self.render_osd(cur_term_w, cur_term_h, frame.pts, &mut out_writer)?;
+                self.render_osd(cur_term_w, cur_term_h, frame.pts, &pipeline, &mut out_writer)?;
                 out_writer.flush()?;
                 continue;
             }
@@ -231,7 +231,7 @@ impl App {
                 .render_frame(&frame, &last_layout, &mut out_writer)?;
 
             let current_pts = audio_pts.unwrap_or(frame.pts);
-            self.render_osd(cur_term_w, cur_term_h, current_pts, &mut out_writer)?;
+            self.render_osd(cur_term_w, cur_term_h, current_pts, &pipeline, &mut out_writer)?;
             out_writer.flush()?;
         }
 
@@ -447,9 +447,13 @@ impl App {
         term_w: u16,
         term_h: u16,
         current_pts: f64,
+        pipeline: &PlaybackPipeline,
         writer: &mut W,
     ) -> Result<()> {
+        let (buf_secs, buf_bytes) = pipeline.buffer_stats(current_pts);
         self.osd_state.current_secs = current_pts;
+        self.osd_state.buffered_secs = buf_secs;
+        self.osd_state.buffered_bytes = buf_bytes;
         self.osd_state.fps = self.clock.fps();
         self.osd_state.dropped_frames = self.clock.dropped_frames();
         self.osd_state.mode = self.render_engine.current_mode();

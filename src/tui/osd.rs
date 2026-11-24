@@ -24,6 +24,7 @@ pub const C_RED: &str = "\x1b[1;38;2;243;139;168m";      // 柔粉红 (静音 / 
 pub const C_PURPLE: &str = "\x1b[1;38;2;180;190;254m";   // 薰衣草紫 (渲染引擎)
 
 pub const C_DOT: &str = "\x1b[1;38;2;255;255;255m";     // 进度条白色圆点游标
+pub const C_BUFFERED: &str = "\x1b[38;2;90;140;175m";   // 次级中亮蓝灰，已缓冲区间 (#5a8caf)
 
 /// 瞬态浮层动作类型
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,6 +77,8 @@ pub struct OsdState {
     pub mode: RenderMode,
     pub fps: f64,
     pub dropped_frames: u64,
+    pub buffered_secs: f64,
+    pub buffered_bytes: usize,
 
     /// 是否开启常驻详细诊断面板（按 Tab 或 o 键呼出）
     pub show_stats: bool,
@@ -104,6 +107,8 @@ impl Default for OsdState {
             mode: RenderMode::Auto,
             fps: 0.0,
             dropped_frames: 0,
+            buffered_secs: 0.0,
+            buffered_bytes: 0,
             show_stats: false,
             active_popup: None,
             is_visible: false,
@@ -124,6 +129,8 @@ impl OsdState {
             mode,
             fps: 0.0,
             dropped_frames: 0,
+            buffered_secs: 0.0,
+            buffered_bytes: 0,
             show_stats: false,
             active_popup: None,
             is_visible: false,
@@ -308,17 +315,39 @@ impl OsdState {
             String::new()
         };
 
+        let cache_str = if self.buffered_secs > 0.05 {
+            let mb = (self.buffered_bytes as f64) / (1024.0 * 1024.0);
+            if mb >= 1.0 {
+                format!(" {C_TEXT_DIM}│{C_BAR_BG} {C_CYAN}📥 {:.1}s ({:.0}MB){C_RESET}{C_BAR_BG}", self.buffered_secs, mb)
+            } else {
+                format!(" {C_TEXT_DIM}│{C_BAR_BG} {C_CYAN}📥 {:.1}s{C_RESET}{C_BAR_BG}", self.buffered_secs)
+            }
+        } else {
+            String::new()
+        };
+
         out.push_str(C_BAR_BG);
-        if term_w >= 75 {
+        let left_text = format!(" {C_BADGE_BG}{C_CYAN} termpv {C_RESET}{C_BAR_BG}  {C_TEXT_MAIN}{cur}{C_TEXT_DIM}/{C_TEXT_MUTED}{tot} ");
+        let right_text = format!(" {C_TEXT_DIM}({pct}%) {C_TEXT_DIM}│{C_BAR_BG} {C_GREEN}{:.1} FPS{C_RESET}{C_BAR_BG}{drop_str}{cache_str} {C_TEXT_DIM}│{C_BAR_BG} {C_PURPLE}{mode_desc}{C_RESET}{C_BAR_BG} {C_TEXT_DIM}│{C_BAR_BG} {vol_str} ", self.fps);
+        let needed_len = visible_len(&left_text) + visible_len(&right_text) + 2;
+
+        if (term_w as usize) >= needed_len + 8 {
+            // 宽屏模式：空间充裕时完整呈现三段式迷你进度轨
+            let rail_len = (term_w as usize).saturating_sub(needed_len);
+            out.push_str(&left_text);
+            render_rail(out, rail_len, self.current_secs, self.buffered_secs, self.total_secs, C_CYAN);
+            out.push(' ');
+            out.push_str(&right_text);
+        } else if term_w >= 75 {
             let _ = write!(
                 out,
-                " {C_BADGE_BG}{C_CYAN} termpv {C_RESET}{C_BAR_BG}  {C_TEXT_MAIN}{cur}{C_TEXT_DIM}/{C_TEXT_MUTED}{tot} {C_TEXT_DIM}({pct}%) {C_TEXT_DIM}│{C_BAR_BG} {C_GREEN}{:.1} FPS{C_RESET}{C_BAR_BG}{drop_str} {C_TEXT_DIM}│{C_BAR_BG} {C_PURPLE}{mode_desc}{C_RESET}{C_BAR_BG} {C_TEXT_DIM}│{C_BAR_BG} {vol_str} ",
+                " {C_BADGE_BG}{C_CYAN} termpv {C_RESET}{C_BAR_BG}  {C_TEXT_MAIN}{cur}{C_TEXT_DIM}/{C_TEXT_MUTED}{tot} {C_TEXT_DIM}({pct}%) {C_TEXT_DIM}│{C_BAR_BG} {C_GREEN}{:.1} FPS{C_RESET}{C_BAR_BG}{drop_str}{cache_str} {C_TEXT_DIM}│{C_BAR_BG} {C_PURPLE}{mode_desc}{C_RESET}{C_BAR_BG} {C_TEXT_DIM}│{C_BAR_BG} {vol_str} ",
                 self.fps
             );
         } else if term_w >= 50 {
             let _ = write!(
                 out,
-                " {C_TEXT_MAIN}{cur}{C_TEXT_DIM}/{C_TEXT_MUTED}{tot} {C_TEXT_DIM}│{C_BAR_BG} {C_GREEN}{:.1} FPS{C_RESET}{C_BAR_BG} {C_TEXT_DIM}│{C_BAR_BG} {vol_str} ",
+                " {C_TEXT_MAIN}{cur}{C_TEXT_DIM}/{C_TEXT_MUTED}{tot}{cache_str} {C_TEXT_DIM}│{C_BAR_BG} {C_GREEN}{:.1} FPS{C_RESET}{C_BAR_BG} {C_TEXT_DIM}│{C_BAR_BG} {vol_str} ",
                 self.fps
             );
         } else {
@@ -351,7 +380,7 @@ impl OsdState {
         out.push_str(C_BAR_BG);
         out.push_str(&left);
         if rail_len >= 8 {
-            render_rail(out, rail_len, self.current_secs, self.total_secs, C_CYAN);
+            render_rail(out, rail_len, self.current_secs, self.buffered_secs, self.total_secs, C_CYAN);
             out.push_str("  ");
         }
         out.push_str(&badge);
@@ -380,7 +409,7 @@ impl OsdState {
         out.push_str(C_BAR_BG);
         out.push_str(&left);
         if rail_len >= 8 {
-            render_rail(out, rail_len, self.volume as f64, 2.0, C_PEACH);
+            render_rail(out, rail_len, self.volume as f64, 0.0, 2.0, C_PEACH);
             out.push_str("  ");
         }
         out.push_str(&badge);
@@ -418,7 +447,7 @@ impl OsdState {
         out.push_str(C_BAR_BG);
         out.push_str(&left);
         if rail_len >= 8 {
-            render_rail(out, rail_len, self.current_secs, self.total_secs, C_YELLOW);
+            render_rail(out, rail_len, self.current_secs, self.buffered_secs, self.total_secs, C_YELLOW);
             out.push(' ');
         }
     }
@@ -450,8 +479,15 @@ impl OsdState {
     }
 }
 
-/// 绘制高精平滑细圆点轨道：━ 前缀 + ● 游标 + ─ 后缀
-fn render_rail(out: &mut String, rail_len: usize, current: f64, total: f64, active_color: &str) {
+/// 绘制三段式高精平滑细圆点轨道：已播放(━) + ●游标 + 已缓存(━) + 未加载(─)
+fn render_rail(
+    out: &mut String,
+    rail_len: usize,
+    current: f64,
+    buffered_secs: f64,
+    total: f64,
+    active_color: &str,
+) {
     if rail_len == 0 {
         return;
     }
@@ -462,22 +498,58 @@ fn render_rail(out: &mut String, rail_len: usize, current: f64, total: f64, acti
         0.0
     };
 
-    let dot_idx = ((rail_len - 1) as f64 * ratio).round() as usize;
+    let dot_idx = ((rail_len.saturating_sub(1)) as f64 * ratio).round() as usize;
 
+    let buf_ratio = if total > 0.0 {
+        ((current + buffered_secs) / total).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let buf_idx = (((rail_len.saturating_sub(1)) as f64 * buf_ratio).round() as usize).max(dot_idx);
+
+    // 1. 已播放段（高亮主色）
     out.push_str(active_color);
     for _ in 0..dot_idx {
         out.push('━');
     }
 
+    // 2. 播放游标
     out.push_str(C_DOT);
     out.push('●');
 
+    // 3. 已缓冲段（次级中亮蓝灰，指示已预读入 500MB 环形缓冲的数据）
+    if buf_idx > dot_idx {
+        out.push_str(C_BUFFERED);
+        for _ in (dot_idx + 1)..=buf_idx {
+            out.push('━');
+        }
+    }
+
+    // 4. 未下载段（暗灰细线轨）
     out.push_str(C_TEXT_DIM);
-    for _ in (dot_idx + 1)..rail_len {
+    for _ in (buf_idx + 1)..rail_len {
         out.push('─');
     }
     out.push_str(C_RESET);
     out.push_str(C_BAR_BG);
+}
+
+/// 辅助计算含 ANSI 颜色转义序列的文本在终端中的实际可见字符宽度
+fn visible_len(s: &str) -> usize {
+    let mut in_escape = false;
+    let mut count = 0;
+    for ch in s.chars() {
+        if ch == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if ch == 'm' {
+                in_escape = false;
+            }
+        } else {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// 格式化时间戳为 MM:SS 或 HH:MM:SS
@@ -579,5 +651,21 @@ mod tests {
 
         // 随后帧恢复静默
         assert!(state.render(80, 24).is_none());
+    }
+
+    #[test]
+    fn test_three_tier_progress_bar_and_cache_indicator() {
+        let mut state = OsdState::new(RenderMode::Kitty, 1.0, false);
+        state.total_secs = 1000.0;
+        state.current_secs = 200.0;
+        state.buffered_secs = 150.0;
+        state.buffered_bytes = 45 * 1024 * 1024;
+        state.toggle_stats();
+
+        let s = state.render(120, 30).unwrap();
+        // 应该包含缓存指示器
+        assert!(s.contains("📥 150.0s (45MB)"));
+        // 应该包含三段式缓冲颜色
+        assert!(s.contains(C_BUFFERED));
     }
 }

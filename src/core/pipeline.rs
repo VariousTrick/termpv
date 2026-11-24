@@ -8,7 +8,7 @@ use crate::render::buffer::RgbFrame;
 use ffmpeg_next::Packet;
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -34,6 +34,10 @@ pub struct PlaybackPipeline {
     target_res: Arc<Mutex<(u32, u32)>>,
     is_eof: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+
+    // 环形缓冲统计（用于向 OSD 反馈已缓存时长与字节大小）
+    latest_demux_pts: Arc<AtomicU64>,
+    buffered_bytes: Arc<AtomicUsize>,
 
     // 线程控制信道
     demux_cmd_tx: Sender<PipelineCmd>,
@@ -99,8 +103,8 @@ impl PlaybackPipeline {
             || path_str.starts_with("rtsp://")
             || path_str.starts_with("rtmp://");
 
-        // 视频数据包通道（网络流使用 300 包约 10~15 秒预读大缓冲抗抖动，本地流保持 30 包低内存占用）
-        let packet_cap = if is_network { 300 } else { 30 };
+        // 视频数据包通道（网络流使用 15000 包/约 500MB 预读超大缓冲，本地流保持 30 包低内存占用）
+        let packet_cap = if is_network { 15000 } else { 30 };
         let (video_packet_tx, video_packet_rx): (
             SyncSender<(u64, Option<Packet>)>,
             Receiver<(u64, Option<Packet>)>,
@@ -119,10 +123,15 @@ impl PlaybackPipeline {
         let is_eof = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
 
+        let latest_demux_pts = Arc::new(AtomicU64::new(0));
+        let buffered_bytes = Arc::new(AtomicUsize::new(0));
+
         // 4. 派生【线程 1: 后台极速解复用与音频解码 Worker】
         let demux_handle = {
             let running = Arc::clone(&running);
             let is_eof = Arc::clone(&is_eof);
+            let latest_demux_pts = Arc::clone(&latest_demux_pts);
+            let buffered_bytes = Arc::clone(&buffered_bytes);
             let audio_player = audio_player.clone();
             let loop_playback = config.loop_playback;
 
@@ -137,6 +146,9 @@ impl PlaybackPipeline {
                         demux_cmd_rx,
                         running,
                         is_eof,
+                        latest_demux_pts,
+                        buffered_bytes,
+                        is_network,
                         loop_playback,
                     );
                 })
@@ -146,6 +158,7 @@ impl PlaybackPipeline {
         // 5. 派生【线程 2: 后台视频解码与色彩空间缩放 Worker】
         let video_handle = {
             let running = Arc::clone(&running);
+            let buffered_bytes = Arc::clone(&buffered_bytes);
             let frame_queue = Arc::clone(&frame_queue);
             let target_res = Arc::clone(&target_res);
 
@@ -158,6 +171,7 @@ impl PlaybackPipeline {
                         video_cmd_rx,
                         frame_queue,
                         target_res,
+                        buffered_bytes,
                         running,
                     );
                 })
@@ -173,6 +187,8 @@ impl PlaybackPipeline {
             target_res,
             is_eof,
             running,
+            latest_demux_pts,
+            buffered_bytes,
             demux_cmd_tx,
             video_cmd_tx,
             demux_handle: Some(demux_handle),
@@ -190,9 +206,18 @@ impl PlaybackPipeline {
         cmd_rx: Receiver<PipelineCmd>,
         running: Arc<AtomicBool>,
         is_eof: Arc<AtomicBool>,
+        latest_demux_pts: Arc<AtomicU64>,
+        buffered_bytes: Arc<AtomicUsize>,
+        is_network: bool,
         loop_playback: bool,
     ) {
         let audio_time_base = demuxer.audio_time_base();
+        let video_time_base = demuxer.video_time_base();
+        let max_buffer_bytes = if is_network {
+            500 * 1024 * 1024 // 500 MB 内存缓冲上限
+        } else {
+            30 * 1024 * 1024
+        };
         let mut current_gen = 0u64;
         let mut pending_first_audio = false;
 
@@ -208,6 +233,8 @@ impl PlaybackPipeline {
                         }
                         current_gen = generation;
                         pending_first_audio = true;
+                        buffered_bytes.store(0, Ordering::Relaxed);
+                        latest_demux_pts.store(pts.to_bits(), Ordering::Relaxed);
                     }
                     PipelineCmd::Stop => {
                         running.store(false, Ordering::Relaxed);
@@ -217,7 +244,13 @@ impl PlaybackPipeline {
                 }
             }
 
-            // 2. 读取下一媒体包（视频队列满时通过 SyncSender 自然反压，避免单向饥饿）
+            // 2. 检查 500MB 内存背压（达到上限时休眠让出 CPU，防内存无节制膨胀）
+            if buffered_bytes.load(Ordering::Relaxed) >= max_buffer_bytes {
+                thread::sleep(Duration::from_millis(15));
+                continue;
+            }
+
+            // 3. 读取下一媒体包（视频队列满时通过 SyncSender 自然反压，避免单向饥饿）
             match demuxer.read_packet() {
                 Some((StreamKind::Audio, packet)) => {
                     // 音频数据包即刻解码为 PCM，推入声卡水库，实现零延迟出声
@@ -236,6 +269,12 @@ impl PlaybackPipeline {
                     }
                 }
                 Some((StreamKind::Video, packet)) => {
+                    let size = packet.size();
+                    if let Some(p) = packet.pts() {
+                        let pts_secs = (p as f64) * video_time_base;
+                        latest_demux_pts.store(pts_secs.to_bits(), Ordering::Relaxed);
+                    }
+                    buffered_bytes.fetch_add(size, Ordering::Relaxed);
                     // 附带当前代数投递给视频解码线程（若队列满自动阻塞，自然反压）
                     if video_packet_tx.send((current_gen, Some(packet))).is_err() {
                         break;
@@ -268,6 +307,7 @@ impl PlaybackPipeline {
         cmd_rx: Receiver<PipelineCmd>,
         frame_queue: Arc<(Mutex<VecDeque<(u64, RgbFrame)>>, Condvar)>,
         target_res: Arc<Mutex<(u32, u32)>>,
+        buffered_bytes: Arc<AtomicUsize>,
         running: Arc<AtomicBool>,
     ) {
         let mut current_gen = 0u64;
@@ -314,6 +354,13 @@ impl PlaybackPipeline {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
+
+            if let Some(packet) = &packet_opt {
+                let size = packet.size();
+                let _ = buffered_bytes.try_update(Ordering::Relaxed, Ordering::Relaxed, |b| {
+                    Some(b.saturating_sub(size))
+                });
+            }
 
             // 若接收到的数据包早于当前 Seek 代数，立即丢弃，零 CPU 解码浪费！
             if pkt_gen < current_gen {
@@ -422,6 +469,15 @@ impl PlaybackPipeline {
         let mut q = lock.lock().unwrap();
         q.clear();
         cvar.notify_all();
+    }
+
+    /// 获取当前流缓冲统计（缓冲剩余秒数, 缓冲总字节大小）
+    pub fn buffer_stats(&self, current_pts: f64) -> (f64, usize) {
+        let latest_bits = self.latest_demux_pts.load(Ordering::Relaxed);
+        let latest_pts = f64::from_bits(latest_bits);
+        let buffered_secs = (latest_pts - current_pts).max(0.0);
+        let bytes = self.buffered_bytes.load(Ordering::Relaxed);
+        (buffered_secs, bytes)
     }
 
     /// 暂停/恢复声卡输出
