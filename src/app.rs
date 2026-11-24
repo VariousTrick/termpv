@@ -27,7 +27,7 @@ impl App {
         let osd = OsdState::new(config.render_mode, config.volume, config.mute);
 
         Self {
-            render_engine: RenderEngine::new(config.render_mode),
+            render_engine: RenderEngine::new(config.render_mode, config.color_filter),
             config,
             clock: MasterClock::new(),
             osd_state: osd,
@@ -125,13 +125,13 @@ impl App {
             // 2. 暂停状态响应（停止帧提取与时钟步进，但持续响应键盘与 OSD 状态更新）
             if self.osd_state.paused {
                 if self.pending_seek_snap {
-                    if let Some((frame_gen, frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(50)) {
+                    if let Some((frame_gen, mut frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(50)) {
                         if frame_gen >= self.current_seek_gen {
                             self.pending_seek_snap = false;
                             self.clock.seek_to(frame.pts);
                             self.osd_state.current_secs = frame.pts;
                             self.render_engine
-                                .render_frame(&frame, &last_layout, &mut out_writer)?;
+                                .render_frame(&mut frame, &last_layout, &mut out_writer)?;
                         }
                     }
                 }
@@ -163,7 +163,7 @@ impl App {
             }
 
             // 4. 从后台有界队列提取预解码成品帧（超时 15ms，绝不阻塞 UI）
-            let Some((frame_gen, frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
+            let Some((frame_gen, mut frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
                 let is_seeking = self
                     .last_seek_at
                     .map_or(false, |t| t.elapsed() < Duration::from_millis(600));
@@ -196,7 +196,7 @@ impl App {
 
                 self.clock.record_rendered_frame();
                 self.render_engine
-                    .render_frame(&frame, &last_layout, &mut out_writer)?;
+                    .render_frame(&mut frame, &last_layout, &mut out_writer)?;
 
                 self.render_osd(cur_term_w, cur_term_h, frame.pts, &pipeline, &mut out_writer)?;
                 out_writer.flush()?;
@@ -289,7 +289,7 @@ impl App {
 
             // 6. 渲染视频图像与 OSD 状态栏
             self.render_engine
-                .render_frame(&frame, &last_layout, &mut out_writer)?;
+                .render_frame(&mut frame, &last_layout, &mut out_writer)?;
 
             let current_pts = audio_pts.unwrap_or(frame.pts);
             final_pts = current_pts;
@@ -475,6 +475,19 @@ impl App {
                         "\x1b_Ga=d,d=A,q=2\x1b\\\x1b_Ga=d,d=a,q=2\x1b\\\x1b[2J\x1b[1;1H\x1b[3J"
                     )?;
                     writer.flush()?;
+                }
+                PlayerAction::CycleColorFilter => {
+                    let (preset, custom_hue) = self.render_engine.cycle_filter();
+                    let hue = if preset == crate::render::filter::ColorFilterPreset::CustomHue {
+                        Some(custom_hue)
+                    } else {
+                        None
+                    };
+                    self.osd_state.trigger_filter(preset, hue);
+                }
+                PlayerAction::AdjustFilterHue(delta) => {
+                    let (preset, hue) = self.render_engine.adjust_filter_hue(delta as f32);
+                    self.osd_state.trigger_filter(preset, Some(hue));
                 }
                 PlayerAction::ToggleOsd => {
                     self.osd_state.toggle_stats();

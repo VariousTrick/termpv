@@ -2,6 +2,7 @@
 // 采用原生 MPV 极简克制单行风格（对齐 mpv --vo=tct / 纯终端模式）：
 // 平时 100% 纯净无干扰，按键即时单行反馈，关闭/超时彻底擦除，绝不留多行残影
 use crate::config::RenderMode;
+use crate::render::filter::ColorFilterPreset;
 use std::fmt::Write as FmtWrite;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,10 @@ pub enum OsdPopupKind {
     Pause,
     Resume,
     Mode(RenderMode),
+    Filter {
+        preset: ColorFilterPreset,
+        hue_deg: Option<u16>,
+    },
 }
 
 /// 瞬态浮层结构体（支持生命周期定时器与自动淡化）
@@ -188,6 +193,14 @@ impl OsdState {
         ));
     }
 
+    /// 触发色彩风格滤镜切换浮层反馈（1.8 秒自动淡出）
+    pub fn trigger_filter(&mut self, preset: ColorFilterPreset, hue_deg: Option<u16>) {
+        self.active_popup = Some(OsdPopup::new(
+            OsdPopupKind::Filter { preset, hue_deg },
+            Duration::from_millis(1800),
+        ));
+    }
+
     /// 切换详细统计面板
     pub fn toggle_stats(&mut self) {
         self.show_stats = !self.show_stats;
@@ -275,6 +288,9 @@ impl OsdState {
                 }
                 OsdPopupKind::Mode(m) => {
                     self.render_mode_hud(&mut out, term_w, m);
+                }
+                OsdPopupKind::Filter { preset, hue_deg } => {
+                    self.render_filter_hud(&mut out, term_w, preset, hue_deg);
                 }
             },
         }
@@ -476,6 +492,29 @@ impl OsdState {
             out,
             " {C_BADGE_BG}{C_PURPLE} 📺 渲染模式: {desc} {C_RESET}{C_BAR_BG} "
         );
+    }
+
+    /// 渲染色彩风格滤镜提示
+    fn render_filter_hud(
+        &self,
+        out: &mut String,
+        _term_w: u16,
+        preset: ColorFilterPreset,
+        hue_deg: Option<u16>,
+    ) {
+        let name = preset.display_name();
+        out.push_str(C_BAR_BG);
+        if let Some(deg) = hue_deg {
+            let _ = write!(
+                out,
+                " {C_BADGE_BG}{C_PEACH} 🎨 {name} ({deg}°) {C_RESET}{C_BAR_BG} "
+            );
+        } else {
+            let _ = write!(
+                out,
+                " {C_BADGE_BG}{C_PEACH} 🎨 色彩风格: {name} {C_RESET}{C_BAR_BG} "
+            );
+        }
     }
 }
 

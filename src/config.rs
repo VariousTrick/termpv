@@ -1,4 +1,5 @@
 // 播放器配置与命令行参数解析模块
+use crate::render::filter::ColorFilterPreset;
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
@@ -33,6 +34,10 @@ pub struct Config {
     /// 初始渲染模式 (auto, kitty, sixel, half-block, ascii)
     #[arg(short = 'm', long = "mode", value_enum, default_value_t = RenderMode::Auto)]
     pub render_mode: RenderMode,
+
+    /// 初始色彩风格滤镜 (original, skin-glow, sin-city-red, cyber-blue, noir-bw, teal-orange, custom-hue)
+    #[arg(short = 'f', long = "filter", value_enum, default_value_t = ColorFilterPreset::Original)]
+    pub color_filter: ColorFilterPreset,
 
     /// 初始音量 (0.0 到 2.0，默认为 1.0)
     #[arg(long = "volume", default_value_t = 1.0)]

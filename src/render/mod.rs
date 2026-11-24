@@ -1,6 +1,7 @@
 // 渲染系统核心门面与抽象 Trait
 pub mod ascii;
 pub mod buffer;
+pub mod filter;
 pub mod halfblock;
 pub mod kitty;
 
@@ -8,6 +9,7 @@ use crate::config::RenderMode;
 use crate::error::Result;
 use crate::render::ascii::AsciiRenderer;
 use crate::render::buffer::RgbFrame;
+use crate::render::filter::{ColorFilter, ColorFilterPreset};
 use crate::render::halfblock::HalfBlockRenderer;
 use crate::render::kitty::KittyRenderer;
 use std::io::Write;
@@ -29,11 +31,12 @@ pub struct RenderEngine {
     halfblock: HalfBlockRenderer,
     ascii: AsciiRenderer,
     kitty: KittyRenderer,
+    filter: ColorFilter,
 }
 
 impl RenderEngine {
-    /// 初始化渲染引擎，支持自动探测终端环境
-    pub fn new(preferred: RenderMode) -> Self {
+    /// 初始化渲染引擎，支持自动探测终端环境与初始色彩风格
+    pub fn new(preferred: RenderMode, filter_preset: ColorFilterPreset) -> Self {
         let active_mode = match preferred {
             RenderMode::Auto => Self::detect_best_mode(),
             specific => specific,
@@ -44,6 +47,7 @@ impl RenderEngine {
             halfblock: HalfBlockRenderer::new(),
             ascii: AsciiRenderer::new(),
             kitty: KittyRenderer::new(),
+            filter: ColorFilter::new(filter_preset),
         }
     }
 
@@ -87,13 +91,25 @@ impl RenderEngine {
         self.current_mode
     }
 
-    /// 渲染当前帧到终端（结合 Layout 居中布局）
+    /// 循环切换 3D LUT 色彩风格滤镜
+    pub fn cycle_filter(&mut self) -> (ColorFilterPreset, u16) {
+        let preset = self.filter.cycle_preset();
+        (preset, self.filter.custom_hue_deg())
+    }
+
+    /// 实时微调自定义保留色相中心（度）
+    pub fn adjust_filter_hue(&mut self, delta_deg: f32) -> (ColorFilterPreset, u16) {
+        self.filter.adjust_hue(delta_deg)
+    }
+
+    /// 渲染当前帧到终端（先执行 3D LUT 色彩风格化，再结合 Layout 居中输出）
     pub fn render_frame<W: Write>(
         &mut self,
-        frame: &RgbFrame,
+        frame: &mut RgbFrame,
         layout: &Layout,
         writer: &mut W,
     ) -> Result<()> {
+        self.filter.apply_in_place(&mut frame.data);
         match self.current_mode {
             RenderMode::Kitty => self.kitty.render(frame, layout, writer),
             RenderMode::HalfBlock => self.halfblock.render(frame, layout, writer),

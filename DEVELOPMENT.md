@@ -30,7 +30,7 @@
 由于视频每秒产生 30~60 帧，任何在帧循环内的堆内存分配（如高频 `format!()` 或 `Vec::new()`）都会造成严重的内存抖动：
 - `HalfBlockRenderer` 与 `AsciiRenderer` 内部持有 `scratch_buf: String`，通过 `.clear()` 原位复用内存。
 - 视频缩放复用 `libswscale` 的 `ScalerContext`，仅在窗口尺寸变动时重新构建。
-- 输出流统一包裹 `BufWriter<Stdout>`（容量 256KB），单帧完成计算后一次性刷盘（`flush`）。
+- 输出流统一包裹 `BufWriter<Stdout>`（容量 8MB），确保单帧 Kitty 图像与 OSD 序列一次性原子刷盘（`flush`）。
 
 ---
 
@@ -59,6 +59,13 @@ while event::poll(Duration::ZERO)? {
 终端字符单元格并非正方形（通常高度约为宽度的两倍）：
 - 在 **HalfBlock** 模式下，1个字符格容纳上下2个像素，这使得“1个字符宽”在物理尺寸上恰好与“2个半块高”近似等长（长宽比接近 1:1）。
 - `calculate_target_resolution` 利用该物理特性，以原视频比例 $\text{Aspect} = \frac{W_{src}}{H_{src}}$ 拟合字符网格，并在 `HalfBlockRenderer` 中自动计算上下左右留白（黑边），彻底消除了人物被压扁或画面满屏大块的伪影。
+
+### 4. 双向内存缓存、`hr-seek=no` 关键帧瞬跳与 3D LUT 色彩滤镜
+- **双向缓存与关键帧秒跳（`src/core/pipeline.rs`、`src/audio/player.rs`）**：
+  - 解复用器保持 `demux_epoch` 不断流，视频解码 Worker 维护 150MB `history_packets`，声卡维护 60 秒 PCM `history_buffer`，实现前后双向免网络重连跳转；
+  - 缓存命中 Seek 时直接对齐目标附近关键帧（I 帧）并由声卡 `skip_to(snap_pts)` 同步对齐（附带 3ms 线性微淡入），避开整段 GOP 软解预卷耗时。
+- **3D LUT 定点三线性插值滤镜（`src/render/filter.rs`）**：
+  - 切换风格时在 CPU 上预计算 `33×33×33` 查找表（~108KB），逐帧对 `RgbFrame` 原地执行定点整数三线性插值（消除 64 级直查带来的色阶断层），所有渲染后端（Kitty / HalfBlock / ASCII）统一共享。
 
 ---
 

@@ -16,6 +16,10 @@ pub enum PlayerAction {
     ToggleMute,
     /// 切换渲染模式（Kitty -> HalfBlock -> Ascii 轮转）
     CycleRenderMode,
+    /// 切换色彩风格滤镜（原画 -> 暗调留肤 -> 罪恶之城红 -> 赛博蓝等）
+    CycleColorFilter,
+    /// 实时旋转自定义留色色相角度（度）
+    AdjustFilterHue(i16),
     /// 切换 OSD 信息显示
     ToggleOsd,
     /// 退出播放
@@ -68,6 +72,9 @@ fn map_key_to_action(key: KeyEvent) -> PlayerAction {
         KeyCode::Char('-') | KeyCode::Char('_') | KeyCode::Char('9') => PlayerAction::AdjustVolume(-0.05),
         KeyCode::Char('x') => PlayerAction::ToggleMute,
         KeyCode::Char('m') => PlayerAction::CycleRenderMode,
+        KeyCode::Char('c') => PlayerAction::CycleColorFilter,
+        KeyCode::Char('[') => PlayerAction::AdjustFilterHue(-10),
+        KeyCode::Char(']') => PlayerAction::AdjustFilterHue(10),
         KeyCode::Char('o') | KeyCode::Tab => PlayerAction::ToggleOsd,
         _ => PlayerAction::None,
     }
