@@ -13,6 +13,7 @@ pub struct AudioPlayer {
     sample_rate: u32,
     channels: u16,
     buffer: Arc<Mutex<VecDeque<f32>>>,
+    history_buffer: Arc<Mutex<VecDeque<f32>>>,
     played_samples: Arc<AtomicU64>,
     base_pts_us: Arc<AtomicU64>,
     volume_bits: Arc<AtomicU32>,
@@ -63,6 +64,8 @@ impl AudioPlayer {
         };
 
         let buffer: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 4)));
+        let history_buffer: Arc<Mutex<VecDeque<f32>>> =
+            Arc::new(Mutex::new(VecDeque::with_capacity(48000 * 4)));
         let played_samples = Arc::new(AtomicU64::new(0));
         let base_pts_us = Arc::new(AtomicU64::new(0));
         let volume_bits = Arc::new(AtomicU32::new(1.0f32.to_bits()));
@@ -72,6 +75,7 @@ impl AudioPlayer {
         let last_callback = Arc::new(Mutex::new(None));
 
         let buf_clone = Arc::clone(&buffer);
+        let hist_clone = Arc::clone(&history_buffer);
         let played_clone = Arc::clone(&played_samples);
         let vol_clone = Arc::clone(&volume_bits);
         let mute_clone = Arc::clone(&muted);
@@ -86,6 +90,9 @@ impl AudioPlayer {
                     Self::audio_callback(
                         data,
                         &buf_clone,
+                        &hist_clone,
+                        sample_rate,
+                        channels,
                         &played_clone,
                         &vol_clone,
                         &mute_clone,
@@ -107,6 +114,7 @@ impl AudioPlayer {
             sample_rate,
             channels,
             buffer,
+            history_buffer,
             played_samples,
             base_pts_us,
             volume_bits,
@@ -117,10 +125,13 @@ impl AudioPlayer {
         })
     }
 
-    /// 核心声卡数据填充回调（运行于高优先级音频线程）
+    /// 核心声卡数据填充回调（运行于高优先级音频线程，同时将播放完的 PCM 移入后向历史缓冲）
     fn audio_callback(
         data: &mut [f32],
         buffer: &Arc<Mutex<VecDeque<f32>>>,
+        history_buffer: &Arc<Mutex<VecDeque<f32>>>,
+        sample_rate: u32,
+        channels: u16,
         played_samples: &Arc<AtomicU64>,
         vol_bits: &Arc<AtomicU32>,
         muted: &Arc<AtomicBool>,
@@ -144,13 +155,27 @@ impl AudioPlayer {
             }
         };
 
+        let mut hist_guard = history_buffer.lock().ok();
         let mut actual_played = 0u64;
+
         for sample in data.iter_mut() {
             if let Some(s) = guard.pop_front() {
                 *sample = s * gain;
+                if let Some(h) = &mut hist_guard {
+                    h.push_back(s);
+                }
                 actual_played += 1;
             } else {
                 *sample = 0.0;
+            }
+        }
+
+        // 限制后向音频历史缓冲上限为 60 秒（约 23MB，对齐 MPV 的回退缓存）
+        if let Some(h) = &mut hist_guard {
+            let max_history = (sample_rate as usize) * (channels as usize) * 60;
+            if h.len() > max_history {
+                let excess = h.len() - max_history;
+                h.drain(0..excess);
             }
         }
 
@@ -243,31 +268,122 @@ impl AudioPlayer {
         (len as f64) / (self.sample_rate as f64 * self.channels as f64)
     }
 
-    /// 内存缓存内快速跳跃（直接裁切当前已解码的 PCM 采样，无需清空重置声卡）
+    /// 获取当前历史缓冲可供向后回退的最大秒数
     #[allow(dead_code)]
-    pub fn skip_to(&self, target_secs: f64) -> bool {
+    pub fn history_duration(&self) -> f64 {
+        let len = self.history_buffer.lock().map(|h| h.len()).unwrap_or(0);
+        let rate_chan = self.sample_rate as f64 * self.channels as f64;
+        if rate_chan > 0.0 {
+            len as f64 / rate_chan
+        } else {
+            0.0
+        }
+    }
+
+    /// 检测目标时间是否在音频双向内存缓冲区间内（不修改状态）
+    pub fn can_skip_to(&self, target_secs: f64) -> bool {
         let current = self.current_pts();
-        if target_secs <= current {
+        let rate_chan = self.sample_rate as f64 * self.channels as f64;
+        if rate_chan <= 0.0 {
             return false;
         }
-        let delta = target_secs - current;
-        let rate_chan = self.sample_rate as f64 * self.channels as f64;
-        let drop_samples = (delta * rate_chan).round() as usize;
-
-        let Ok(mut guard) = self.buffer.lock() else {
-            return false;
-        };
-
-        if drop_samples < guard.len() {
-            guard.drain(0..drop_samples);
-            let us_added = (drop_samples as f64 / rate_chan * 1_000_000.0) as u64;
-            self.base_pts_us.fetch_add(us_added, Ordering::Relaxed);
-            if let Ok(mut cb) = self.last_callback.lock() {
-                *cb = None;
-            }
-            true
+        if target_secs > current {
+            let need = ((target_secs - current) * rate_chan).round() as usize;
+            self.buffer.lock().map(|b| need < b.len()).unwrap_or(false)
+        } else if target_secs < current {
+            let need = ((current - target_secs) * rate_chan).round() as usize;
+            self.history_buffer.lock().map(|h| need <= h.len()).unwrap_or(false)
         } else {
-            false
+            true
+        }
+    }
+
+    /// 内存缓存内双向跳跃（支持前向快进与后向快退，带 3ms 柔和淡入，消除波形硬切爆音）
+    pub fn skip_to(&self, target_secs: f64) -> bool {
+        let current = self.current_pts();
+        let rate_chan = self.sample_rate as f64 * self.channels as f64;
+        let fade_samples = ((self.sample_rate as f64 * 0.003) as usize * self.channels as usize).max(64);
+
+        if target_secs > current {
+            // 前向快进：裁切已有待播放缓冲，并将裁切的采样记录入历史缓冲
+            let delta = target_secs - current;
+            let drop_samples = (delta * rate_chan).round() as usize;
+
+            let Ok(mut guard) = self.buffer.lock() else {
+                return false;
+            };
+
+            if drop_samples < guard.len() {
+                // 将被跳过的样本送入历史缓冲，保证后续后退仍能命中
+                if let Ok(mut hist) = self.history_buffer.lock() {
+                    let drained: Vec<f32> = guard.drain(0..drop_samples).collect();
+                    hist.extend(drained);
+                    let max_history = (self.sample_rate as usize) * (self.channels as usize) * 60;
+                    if hist.len() > max_history {
+                        let excess = hist.len() - max_history;
+                        hist.drain(0..excess);
+                    }
+                } else {
+                    guard.drain(0..drop_samples);
+                }
+
+                let us_added = (drop_samples as f64 / rate_chan * 1_000_000.0) as u64;
+                self.base_pts_us.fetch_add(us_added, Ordering::Relaxed);
+
+                // 对裁切点后 3ms 采样执行线性微淡入，消除扬声器硬切爆音
+                let apply_fade = fade_samples.min(guard.len());
+                for i in 0..apply_fade {
+                    let factor = i as f32 / apply_fade as f32;
+                    guard[i] *= factor;
+                }
+
+                if let Ok(mut cb) = self.last_callback.lock() {
+                    *cb = None;
+                }
+                true
+            } else {
+                false
+            }
+        } else if target_secs < current {
+            // 后向快退：从历史播放缓冲中提取已播出的音频逆向推回待播队列头部
+            let delta = current - target_secs;
+            let rewind_samples = (delta * rate_chan).round() as usize;
+
+            let Ok(mut hist) = self.history_buffer.lock() else {
+                return false;
+            };
+
+            if rewind_samples <= hist.len() {
+                let start_idx = hist.len() - rewind_samples;
+                let restored: Vec<f32> = hist.drain(start_idx..).collect();
+
+                let Ok(mut guard) = self.buffer.lock() else {
+                    return false;
+                };
+
+                for s in restored.into_iter().rev() {
+                    guard.push_front(s);
+                }
+
+                let us_sub = (rewind_samples as f64 / rate_chan * 1_000_000.0) as u64;
+                self.base_pts_us.fetch_sub(us_sub, Ordering::Relaxed);
+
+                // 对新播放头部做 3ms 微淡入，平滑声波过渡
+                let apply_fade = fade_samples.min(guard.len());
+                for i in 0..apply_fade {
+                    let factor = i as f32 / apply_fade as f32;
+                    guard[i] *= factor;
+                }
+
+                if let Ok(mut cb) = self.last_callback.lock() {
+                    *cb = None;
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            true
         }
     }
 
@@ -275,6 +391,9 @@ impl AudioPlayer {
     pub fn seek_to(&self, target_secs: f64) {
         if let Ok(mut guard) = self.buffer.lock() {
             guard.clear();
+        }
+        if let Ok(mut hist) = self.history_buffer.lock() {
+            hist.clear();
         }
         self.played_samples.store(0, Ordering::Relaxed);
         let us = (target_secs.max(0.0) * 1_000_000.0) as u64;

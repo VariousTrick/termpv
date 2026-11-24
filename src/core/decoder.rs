@@ -83,6 +83,52 @@ impl VideoDecoder {
         Ok(frames)
     }
 
+    /// 仅将数据包推入解码器建立参考帧状态，完全跳过 swscale 色彩空间转换与像素缩放（极速预卷模式）
+    #[allow(dead_code)]
+    pub fn decode_packet_discard(&mut self, packet: &Packet) -> Result<()> {
+        self.decoder
+            .send_packet(packet)
+            .map_err(|e| TermpvError::VideoDecodeError(format!("发送数据包失败: {e}")))?;
+
+        let mut decoded = VideoFrame::empty();
+        while self.decoder.receive_frame(&mut decoded).is_ok() {
+            // 纯粹清空解码器缓冲建立参考帧，绝不跑任何 swscale 软件缩放！
+        }
+
+        Ok(())
+    }
+
+    /// 条件解码：仅对 PTS >= min_pts 的有效帧执行 RGB 转换，早于 min_pts 的前置帧就地丢弃（零无用缩放开销）
+    pub fn decode_packet_from_pts(
+        &mut self,
+        packet: &Packet,
+        min_pts: f64,
+        target_w: u32,
+        target_h: u32,
+    ) -> Result<Vec<RgbFrame>> {
+        self.decoder
+            .send_packet(packet)
+            .map_err(|e| TermpvError::VideoDecodeError(format!("发送数据包失败: {e}")))?;
+
+        let mut frames = Vec::new();
+        let mut decoded = VideoFrame::empty();
+
+        while self.decoder.receive_frame(&mut decoded).is_ok() {
+            let pts_secs = decoded
+                .pts()
+                .map(|pts| (pts as f64) * self.time_base)
+                .unwrap_or(0.0);
+
+            if pts_secs >= min_pts {
+                if let Some(rgb_frame) = self.convert_to_rgb(&decoded, target_w, target_h)? {
+                    frames.push(rgb_frame);
+                }
+            }
+        }
+
+        Ok(frames)
+    }
+
     /// 刷新解码器状态（在 Seek 时重置解码器缓冲，杜绝 send_eof 毒化导致解码器无法继续解码）
     pub fn flush(&mut self) {
         self.decoder.flush();

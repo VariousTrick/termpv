@@ -56,9 +56,12 @@ impl App {
             eprintln!("\x1b[36m🌐 正在连接网络媒体流并解析元信息，请稍候...\x1b[0m");
         }
 
-        // 初始化 FFmpeg
+        // 初始化 FFmpeg 并彻底静音底层 stderr 日志（杜绝在 TUI 备用屏幕下输出换行导致终端画面顶滚错位）
         ffmpeg_next::init()
             .map_err(|e| TermpvError::FfmpegError(format!("FFmpeg 初始化失败: {e}")))?;
+        unsafe {
+            ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_QUIET);
+        }
 
         // 启动工业级多线程解耦管线（后台启动 Demuxer + AudioWorker + VideoWorker）
         let pipeline = PlaybackPipeline::new(&file_path, &self.config)?;
@@ -86,7 +89,7 @@ impl App {
 
         // 激活终端接管保护
         let _guard = TerminalGuard::new()?;
-        let mut out_writer = BufWriter::with_capacity(512 * 1024, stdout());
+        let mut out_writer = BufWriter::with_capacity(8 * 1024 * 1024, stdout());
 
         // 计算初始尺寸并通知视频解码 Worker 准备首批缩放帧
         // 在 Kitty 模式下启用 z=-1 背景图层，视频直接 100% 铺满整个终端高度，OSD 浮动在图层上层；
@@ -106,6 +109,11 @@ impl App {
 
         let mut last_layout = initial_layout;
         let mut final_pts = self.config.start.unwrap_or(0.0);
+
+        let mut diag_frames = 0u64;
+        let mut diag_last_wall = Instant::now();
+        let mut diag_last_audio: Option<f64> = None;
+        let mut diag_last_video: Option<f64> = None;
 
         while self.running {
             // 1. 处理用户键盘事件
@@ -175,6 +183,16 @@ impl App {
                 self.pending_seek_snap = false;
                 self.clock.seek_to(frame.pts);
                 self.osd_state.current_secs = frame.pts;
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "[DIAG-SNAP] frame_pts={:.3}s audio_pts={:?}",
+                        frame.pts,
+                        pipeline.current_audio_pts()
+                    );
+                    diag_last_wall = Instant::now();
+                    diag_last_audio = pipeline.current_audio_pts();
+                    diag_last_video = Some(frame.pts);
+                }
 
                 self.clock.record_rendered_frame();
                 self.render_engine
@@ -189,14 +207,44 @@ impl App {
             let audio_pts = pipeline.current_audio_pts();
             let decision = self.schedule_frame_pts(frame.pts, audio_pts);
 
+            if log::log_enabled!(log::Level::Debug) {
+                diag_frames += 1;
+                let diff_ms = audio_pts.map(|a| (frame.pts - a) * 1000.0).unwrap_or(0.0);
+                let is_anomaly = matches!(decision, SyncDecision::Drop) || diff_ms.abs() > 150.0;
+                if diag_frames % 30 == 0 || (is_anomaly && diag_last_wall.elapsed() >= Duration::from_millis(200)) {
+                    let wall_dt = diag_last_wall.elapsed().as_secs_f64().max(1e-6);
+                    let a_rate = match (audio_pts, diag_last_audio) {
+                        (Some(now), Some(prev)) => (now - prev) / wall_dt,
+                        _ => 0.0,
+                    };
+                    let v_rate = match diag_last_video {
+                        Some(prev) => (frame.pts - prev) / wall_dt,
+                        None => 0.0,
+                    };
+                    log::debug!(
+                        "[DIAG] frame={:.3}s audio={:?} diff={:+.1}ms dec={:?} fps={:.1} a_rate={:.3}x v_rate={:.3}x",
+                        frame.pts,
+                        audio_pts.map(|a| format!("{:.3}s", a)),
+                        diff_ms,
+                        decision,
+                        self.clock.fps(),
+                        a_rate,
+                        v_rate
+                    );
+                    diag_last_wall = Instant::now();
+                    diag_last_audio = audio_pts;
+                    diag_last_video = Some(frame.pts);
+                }
+            }
+
             match decision {
                 SyncDecision::Drop => {
                     self.clock.evaluate_frame(frame.pts); // 累计丢帧统计
                     continue;
                 }
                 SyncDecision::Wait(dur) => {
-                    // 绝不无上限睡眠！无论任何原因，单次帧等待绝不能超过 35ms（约一帧），杜绝网络抖动引发画面冻结
-                    let effective_dur = dur.min(Duration::from_millis(35));
+                    // 对齐 MPV：按实际音画差值等待（上限 500ms），并以 10ms 为切片持续响应按键，绝不阻塞 Seek/暂停
+                    let effective_dur = dur.min(Duration::from_millis(500));
 
                     let deadline = Instant::now() + effective_dur;
                     while Instant::now() < deadline {
@@ -216,12 +264,12 @@ impl App {
                             last_layout = nl;
                             pipeline.set_target_resolution(ntw, nth);
                         }
-                        if !self.running || self.osd_state.paused {
+                        if !self.running || self.osd_state.paused || self.pending_seek_snap {
                             break;
                         }
                         let rem = deadline.saturating_duration_since(Instant::now());
                         if rem > Duration::from_millis(4) {
-                            thread::sleep(rem - Duration::from_millis(2));
+                            thread::sleep((rem - Duration::from_millis(2)).min(Duration::from_millis(10)));
                         } else if rem > Duration::from_micros(500) {
                             thread::yield_now();
                         }
@@ -232,6 +280,9 @@ impl App {
 
             if !self.running {
                 break;
+            }
+            if self.pending_seek_snap {
+                continue;
             }
 
             self.clock.record_rendered_frame();
@@ -366,17 +417,17 @@ impl App {
     fn schedule_frame_pts(&mut self, frame_pts: f64, audio_pts: Option<f64>) -> SyncDecision {
         if let Some(a_pts) = audio_pts {
             let diff = frame_pts - a_pts;
-            // 关键保护：若音画差距过大（> 250ms，如刚 Seek 或网络流阶段性抖动），绝不长休眠或无端丢帧，直接准时渲染！
-            if diff.abs() > 0.250 {
+            // 极端异常保护（如刚 Seek 尚未对齐或流时间戳跳变超过 3 秒），直接渲染让主时钟对齐
+            if diff.abs() > 3.0 {
                 return SyncDecision::Render;
             }
-            // 画面落后音频超过 50ms：才丢帧追赶音频
+            // 画面落后音频超过 50ms：丢帧追赶音频
             if diff < -0.050 {
                 return SyncDecision::Drop;
             }
-            // 画面超前音频超过 3ms：微等待音频对齐（上限严格限制在 35ms，绝不卡死画面）
+            // 画面超前音频超过 3ms：严格按实际差值等待音频追赶（绝不放任倍速脱缰）
             if diff > 0.003 {
-                return SyncDecision::Wait(Duration::from_secs_f64(diff).min(Duration::from_millis(35)));
+                return SyncDecision::Wait(Duration::from_secs_f64(diff).min(Duration::from_millis(500)));
             }
             // 准时渲染
             SyncDecision::Render
@@ -452,7 +503,7 @@ impl App {
                     self.clock.seek_to(target);
                     let hit_cache = pipeline.seek(target, self.current_seek_gen, current);
                     if hit_cache {
-                        log::info!("快进命中 500MB 内存缓存，执行零延迟纯内存跳转至 {:.2}s", target);
+                        log::info!("跳转命中双向内存缓存（前向/后向免断流），执行零延迟纯内存跳转至 {:.2}s", target);
                     }
                 }
                 PlayerAction::None => {}
