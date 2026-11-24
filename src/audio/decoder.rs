@@ -54,22 +54,9 @@ impl AudioDecoder {
         Ok(samples)
     }
 
-    /// 刷新残留音频帧
-    #[allow(dead_code)]
-    pub fn flush(&mut self) -> Result<Vec<f32>> {
-        self.decoder
-            .send_eof()
-            .map_err(|e| TermpvError::AudioError(format!("发送音频 EOF 失败: {e}")))?;
-
-        let mut samples = Vec::new();
-        let mut decoded = AudioFrame::empty();
-
-        while self.decoder.receive_frame(&mut decoded).is_ok() {
-            let resampled = self.resample_frame(&decoded)?;
-            samples.extend(resampled);
-        }
-
-        Ok(samples)
+    /// 刷新音频解码器状态（在 Seek 时重置解码器内部缓冲，杜绝 send_eof 毒化）
+    pub fn flush(&mut self) {
+        self.decoder.flush();
     }
 
     /// 将任意格式（如 AAC/MP3 各种采样率）重采样为目标格式

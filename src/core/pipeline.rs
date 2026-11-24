@@ -185,9 +185,9 @@ impl PlaybackPipeline {
                 match cmd {
                     PipelineCmd::Seek(pts) => {
                         let _ = demuxer.seek(pts);
-                        is_eof.store(false, Ordering::Relaxed);
+                        is_eof.store(false, Ordering::SeqCst);
                         if let Some(audio_dec) = &mut audio_decoder {
-                            let _ = audio_dec.flush();
+                            audio_dec.flush();
                         }
                     }
                     PipelineCmd::Stop => {
@@ -247,8 +247,9 @@ impl PlaybackPipeline {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     PipelineCmd::Seek(_) => {
-                        let (w, h) = *target_res.lock().unwrap();
-                        let _ = decoder.flush(w, h);
+                        decoder.flush();
+                        // 彻底排空 packet_rx 中可能积压的旧数据包或 EOF 哨兵，防止解码脏包
+                        while let Ok(_) = packet_rx.try_recv() {}
                         let (lock, cvar) = &*frame_queue;
                         let mut q = lock.lock().unwrap();
                         q.clear();
@@ -285,7 +286,10 @@ impl PlaybackPipeline {
 
             let frames = match packet_opt {
                 Some(packet) => decoder.decode_packet(&packet, target_w, target_h).unwrap_or_default(),
-                None => decoder.flush(target_w, target_h).unwrap_or_default(),
+                None => {
+                    decoder.flush();
+                    Vec::new()
+                }
             };
 
             // 4. 将成品帧推入有界环形缓冲队列（最多 12 帧，防止显存无度膨胀）
@@ -370,6 +374,8 @@ impl PlaybackPipeline {
     /// 执行 Seek 快进/快退
     pub fn seek(&self, target_secs: f64) {
         let target = target_secs.clamp(0.0, self.duration_secs);
+        // 主线程发起 Seek 时第一时间原子重置 EOF 状态，杜绝主渲染循环在换流真空期误判退出
+        self.is_eof.store(false, Ordering::SeqCst);
         if let Some(player) = &self.audio_player {
             player.seek_to(target);
         }

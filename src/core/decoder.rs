@@ -78,22 +78,9 @@ impl VideoDecoder {
         Ok(frames)
     }
 
-    /// 刷新解码器残留帧
-    pub fn flush(&mut self, target_w: u32, target_h: u32) -> Result<Vec<RgbFrame>> {
-        self.decoder
-            .send_eof()
-            .map_err(|e| TermpvError::VideoDecodeError(format!("发送 EOF 失败: {e}")))?;
-
-        let mut frames = Vec::new();
-        let mut decoded = VideoFrame::empty();
-
-        while self.decoder.receive_frame(&mut decoded).is_ok() {
-            if let Some(rgb_frame) = self.convert_to_rgb(&decoded, target_w, target_h)? {
-                frames.push(rgb_frame);
-            }
-        }
-
-        Ok(frames)
+    /// 刷新解码器状态（在 Seek 时重置解码器缓冲，杜绝 send_eof 毒化导致解码器无法继续解码）
+    pub fn flush(&mut self) {
+        self.decoder.flush();
     }
 
     /// 使用 FFmpeg 内置 libswscale 将原生格式（如 YUV420P）高速转换为 RGB24 并缩放到目标大小

@@ -17,6 +17,7 @@ pub struct App {
     render_engine: RenderEngine,
     osd_state: OsdState,
     running: bool,
+    last_seek_at: Option<Instant>,
 }
 
 impl App {
@@ -39,6 +40,7 @@ impl App {
             clock: MasterClock::new(),
             osd_state: osd,
             running: true,
+            last_seek_at: None,
         }
     }
 
@@ -109,7 +111,10 @@ impl App {
 
             // 4. 从后台有界队列提取预解码成品帧（超时 15ms，绝不阻塞 UI）
             let Some(frame) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
-                if pipeline.is_eof() {
+                let is_seeking = self
+                    .last_seek_at
+                    .map_or(false, |t| t.elapsed() < Duration::from_millis(600));
+                if !is_seeking && pipeline.is_eof() {
                     self.running = false;
                 }
                 continue;
@@ -223,17 +228,20 @@ impl App {
 
         let (target_px_w, target_px_h) = match self.render_engine.current_mode() {
             RenderMode::Kitty => {
-                // 基于终端字符物理像素比（通过 window_size 精确感知或合理回退），按实际显示区域 1:1 像素映射
+                // 对齐 MPV：在 Kitty 协议模式下，终端具备 GPU 级别的双三次滤波硬件缩放。
+                // 现代高清屏（1080p HiDPI / 2K / 4K）单字符物理宽度通常为 18~24 像素。
+                // 严禁以 9px 严重低估导致 CPU 强行欠采样失真；确保保留足够的超采样细节，实现如 mpv 般的超清锐利画质
                 let est_col_width = if let Ok(ws) = crossterm::terminal::window_size() {
                     if ws.columns > 0 && ws.width > 0 {
-                        (ws.width / ws.columns).clamp(6, 32) as u32
+                        (ws.width / ws.columns).clamp(12, 48) as u32
                     } else {
-                        9
+                        18
                     }
                 } else {
-                    9
+                    18
                 };
-                let raw_w = (render_cols as u32 * est_col_width).min(src_w).max(2);
+                let viewport_px = render_cols as u32 * est_col_width;
+                let raw_w = viewport_px.clamp(1280.min(src_w), src_w).max(2);
                 let px_w = (raw_w & !1).max(2);
                 let raw_h = ((px_w as f64) / vid_aspect).round() as u32;
                 let px_h = (raw_h & !1).max(2);
@@ -332,7 +340,9 @@ impl App {
                     let current = pipeline
                         .current_audio_pts()
                         .unwrap_or_else(|| self.clock.current_time());
-                    let target = (current + delta_secs as f64).clamp(0.0, pipeline.duration());
+                    let max_target = (pipeline.duration() - 0.5).max(0.0);
+                    let target = (current + delta_secs as f64).clamp(0.0, max_target);
+                    self.last_seek_at = Some(Instant::now());
                     pipeline.seek(target);
                     self.clock.seek_to(target);
                 }

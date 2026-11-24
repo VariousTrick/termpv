@@ -70,21 +70,13 @@ impl RenderEngine {
         RenderMode::HalfBlock
     }
 
-    /// 智能轮换下一渲染模式
+    /// 智能轮换下一渲染模式 (Kitty -> HalfBlock -> Ascii 循环)
     pub fn cycle_mode(&mut self) -> RenderMode {
-        let has_kitty = Self::supports_kitty();
-
         self.current_mode = match self.current_mode {
-            RenderMode::HalfBlock => RenderMode::Ascii,
-            RenderMode::Ascii => {
-                if has_kitty {
-                    RenderMode::Kitty
-                } else {
-                    RenderMode::HalfBlock
-                }
-            }
             RenderMode::Kitty => RenderMode::HalfBlock,
-            _ => RenderMode::HalfBlock,
+            RenderMode::HalfBlock => RenderMode::Ascii,
+            RenderMode::Ascii => RenderMode::Kitty,
+            _ => RenderMode::Kitty,
         };
 
         self.current_mode
