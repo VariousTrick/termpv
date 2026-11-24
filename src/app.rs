@@ -4,7 +4,7 @@ use crate::core::clock::{MasterClock, SyncDecision};
 use crate::core::pipeline::PlaybackPipeline;
 use crate::error::{Result, TermpvError};
 use crate::render::{Layout, RenderEngine};
-use crate::tui::{drain_actions, render_osd_bar, OsdState, PlayerAction, TerminalGuard};
+use crate::tui::{drain_actions, OsdState, PlayerAction, TerminalGuard};
 use crossterm::terminal;
 use std::io::{stdout, BufWriter, Write};
 use std::thread;
@@ -18,21 +18,13 @@ pub struct App {
     osd_state: OsdState,
     running: bool,
     last_seek_at: Option<Instant>,
+    current_seek_gen: u64,
+    pending_seek_snap: bool,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
-        let osd = OsdState {
-            visible: true,
-            paused: false,
-            current_secs: 0.0,
-            total_secs: 0.0,
-            volume: config.volume,
-            muted: config.mute,
-            mode: config.render_mode,
-            fps: 0.0,
-            dropped_frames: 0,
-        };
+        let osd = OsdState::new(config.render_mode, config.volume, config.mute);
 
         Self {
             render_engine: RenderEngine::new(config.render_mode),
@@ -41,6 +33,8 @@ impl App {
             osd_state: osd,
             running: true,
             last_seek_at: None,
+            current_seek_gen: 0,
+            pending_seek_snap: false,
         }
     }
 
@@ -70,8 +64,13 @@ impl App {
         let mut out_writer = BufWriter::with_capacity(512 * 1024, stdout());
 
         // 计算初始尺寸并通知视频解码 Worker 准备首批缩放帧
+        // 在 Kitty 模式下启用 z=-1 背景图层，视频直接 100% 铺满整个终端高度，OSD 浮动在图层上层；
+        // 纯字符模式（HalfBlock/Ascii）保留底行用于状态文本显示
         let (term_w, term_h) = terminal::size()?;
-        let video_term_h = term_h.saturating_sub(1).max(1);
+        let video_term_h = match self.render_engine.current_mode() {
+            RenderMode::Kitty => term_h,
+            _ => term_h.saturating_sub(1).max(1),
+        };
         let (initial_layout, init_w, init_h) = self.calculate_contain_layout(
             pipeline.source_width(),
             pipeline.source_height(),
@@ -89,15 +88,35 @@ impl App {
                 break;
             }
 
-            // 2. 暂停状态处理
+            // 2. 暂停状态响应（停止帧提取与时钟步进，但持续响应键盘与 OSD 状态更新）
             if self.osd_state.paused {
-                thread::sleep(Duration::from_millis(15));
+                if self.pending_seek_snap {
+                    if let Some((frame_gen, frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(50)) {
+                        if frame_gen >= self.current_seek_gen {
+                            self.pending_seek_snap = false;
+                            self.clock.seek_to(frame.pts);
+                            self.osd_state.current_secs = frame.pts;
+                            self.render_engine
+                                .render_frame(&frame, &last_layout, &mut out_writer)?;
+                        }
+                    }
+                }
+                let (cur_term_w, cur_term_h) = terminal::size()?;
+                let current_pts = pipeline
+                    .current_audio_pts()
+                    .unwrap_or_else(|| self.clock.current_time());
+                self.render_osd(cur_term_w, cur_term_h, current_pts, &mut out_writer)?;
+                out_writer.flush()?;
+                thread::sleep(Duration::from_millis(16));
                 continue;
             }
 
             // 3. 终端窗口尺寸变更或模式切换响应
             let (cur_term_w, cur_term_h) = terminal::size()?;
-            let cur_video_h = cur_term_h.saturating_sub(1).max(1);
+            let cur_video_h = match self.render_engine.current_mode() {
+                RenderMode::Kitty => cur_term_h,
+                _ => cur_term_h.saturating_sub(1).max(1),
+            };
             if mode_changed || cur_term_w != last_layout.term_w || cur_video_h != last_layout.term_h {
                 let (new_layout, new_target_w, new_target_h) = self.calculate_contain_layout(
                     pipeline.source_width(),
@@ -110,7 +129,7 @@ impl App {
             }
 
             // 4. 从后台有界队列提取预解码成品帧（超时 15ms，绝不阻塞 UI）
-            let Some(frame) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
+            let Some((frame_gen, frame)) = pipeline.pop_video_frame_timeout(Duration::from_millis(15)) else {
                 let is_seeking = self
                     .last_seek_at
                     .map_or(false, |t| t.elapsed() < Duration::from_millis(600));
@@ -119,6 +138,26 @@ impl App {
                 }
                 continue;
             };
+
+            // 丢弃陈旧代数的残余帧
+            if frame_gen < self.current_seek_gen {
+                continue;
+            }
+
+            // 关键优化：Seek 后到达的首帧瞬态直刷（零等待、零丢帧、即刻呈现并对齐系统主时钟）
+            if self.pending_seek_snap {
+                self.pending_seek_snap = false;
+                self.clock.seek_to(frame.pts);
+                self.osd_state.current_secs = frame.pts;
+
+                self.clock.record_rendered_frame();
+                self.render_engine
+                    .render_frame(&frame, &last_layout, &mut out_writer)?;
+
+                self.render_osd(cur_term_w, cur_term_h, frame.pts, &mut out_writer)?;
+                out_writer.flush()?;
+                continue;
+            }
 
             // 5. 帧调度：优先以硬件音频时钟为基准，无音频时回退至 CPU 绝对单调时钟
             let audio_pts = pipeline.current_audio_pts();
@@ -130,12 +169,25 @@ impl App {
                     continue;
                 }
                 SyncDecision::Wait(dur) => {
-                    let deadline = Instant::now() + dur;
+                    // 若刚刚 Seek 完毕（处于前 250ms 缓冲期内），防止音频硬件延迟卡死视频流
+                    let is_seeking = self
+                        .last_seek_at
+                        .map_or(false, |t| t.elapsed() < Duration::from_millis(250));
+                    let effective_dur = if is_seeking {
+                        dur.min(Duration::from_millis(16))
+                    } else {
+                        dur
+                    };
+
+                    let deadline = Instant::now() + effective_dur;
                     while Instant::now() < deadline {
                         let inner_mode_changed = self.handle_input_events(&pipeline, &mut out_writer)?;
                         if inner_mode_changed {
                             let (cw, ch) = terminal::size().unwrap_or((120, 40));
-                            let cvh = ch.saturating_sub(1).max(1);
+                            let cvh = match self.render_engine.current_mode() {
+                                RenderMode::Kitty => ch,
+                                _ => ch.saturating_sub(1).max(1),
+                            };
                             let (nl, ntw, nth) = self.calculate_contain_layout(
                                 pipeline.source_width(),
                                 pipeline.source_height(),
@@ -200,22 +252,45 @@ impl App {
         let vid_aspect = (src_w as f64) / (src_h as f64);
         let max_cols = term_w as f64;
         let max_rows = video_term_h as f64;
-        let font_aspect = 2.0;
 
-        let term_aspect = max_cols / (max_rows * font_aspect);
-
-        let (render_cols, render_rows) = if term_aspect > vid_aspect {
-            let r = max_rows;
-            let c = (max_rows * font_aspect * vid_aspect).round();
-            (c.clamp(2.0, max_cols) as u16, r as u16)
+        // 动态推导终端单元格的真实物理高宽比（cell_h / cell_w）
+        // 在 Kitty/Ghostty 等现代终端中，若 window_size 可用则精确推导真实物理点阵比例；
+        // 若不可用，默认取标准现代等宽字体的 1.8（绝非死板粗糙的 2.0）
+        let font_aspect = if let Ok(ws) = crossterm::terminal::window_size() {
+            if ws.columns > 0 && ws.rows > 0 && ws.width > 0 && ws.height > 0 {
+                let cell_w = ws.width as f64 / ws.columns as f64;
+                let cell_h = ws.height as f64 / ws.rows as f64;
+                if cell_w > 0.0 && cell_h > 0.0 {
+                    (cell_h / cell_w).clamp(1.4, 2.4)
+                } else {
+                    1.8
+                }
+            } else {
+                1.8
+            }
         } else {
-            let c = max_cols;
-            let r = (max_cols / (font_aspect * vid_aspect)).round();
-            (c as u16, r.clamp(2.0, max_rows) as u16)
+            1.8
         };
 
-        let pad_x = term_w.saturating_sub(render_cols) / 2;
-        let pad_y = video_term_h.saturating_sub(render_rows) / 2;
+        // 视口物理几何纵横比
+        let term_aspect = max_cols / (max_rows * font_aspect);
+
+        // 严格遵循 Aspect Ratio Contain（保持 16:9 原画比例，等比最大化铺满）：
+        // 当视口偏宽时：高度必然 100% 顶满整个视口，pad_y 严格为 0，消灭上下多余黑边！
+        // 当视口偏高时：宽度必然 100% 顶满整个视口，pad_x 严格为 0，消灭左右多余黑边！
+        let (render_cols, render_rows, pad_x, pad_y) = if term_aspect >= vid_aspect {
+            let r = video_term_h;
+            let c_float = (max_rows * font_aspect * vid_aspect).round();
+            let c = (c_float.clamp(2.0, max_cols) as u16).min(term_w);
+            let px = term_w.saturating_sub(c) / 2;
+            (c, r, px, 0)
+        } else {
+            let c = term_w;
+            let r_float = (max_cols / (font_aspect * vid_aspect)).round();
+            let r = (r_float.clamp(2.0, max_rows) as u16).min(video_term_h);
+            let py = video_term_h.saturating_sub(r) / 2;
+            (c, r, 0, py)
+        };
 
         let layout = Layout {
             render_cols,
@@ -310,12 +385,14 @@ impl App {
                     } else {
                         self.clock.resume();
                     }
+                    self.osd_state.trigger_pause(self.osd_state.paused);
                 }
                 PlayerAction::CycleRenderMode => {
                     let new_mode = self.render_engine.cycle_mode();
                     self.osd_state.mode = new_mode;
                     mode_changed = true;
                     log::info!("切换渲染模式至: {:?}", new_mode);
+                    self.osd_state.trigger_mode(new_mode);
 
                     // 彻底清除终端中可能残留的 Kitty GPU 贴图纹理与全屏内容，防止图层遮挡
                     write!(
@@ -325,16 +402,18 @@ impl App {
                     writer.flush()?;
                 }
                 PlayerAction::ToggleOsd => {
-                    self.osd_state.visible = !self.osd_state.visible;
+                    self.osd_state.toggle_stats();
                 }
                 PlayerAction::AdjustVolume(delta) => {
                     let next = (pipeline.volume() + delta).clamp(0.0, 2.0);
                     pipeline.set_volume(next);
                     self.osd_state.volume = next;
+                    self.osd_state.trigger_volume(delta);
                 }
                 PlayerAction::ToggleMute => {
                     pipeline.toggle_mute();
                     self.osd_state.muted = pipeline.is_muted();
+                    self.osd_state.trigger_mute(self.osd_state.muted);
                 }
                 PlayerAction::Seek(delta_secs) => {
                     let current = pipeline
@@ -343,8 +422,10 @@ impl App {
                     let max_target = (pipeline.duration() - 0.5).max(0.0);
                     let target = (current + delta_secs as f64).clamp(0.0, max_target);
                     self.last_seek_at = Some(Instant::now());
-                    pipeline.seek(target);
-                    self.clock.seek_to(target);
+                    self.osd_state.trigger_seek(delta_secs);
+                    self.current_seek_gen += 1;
+                    self.pending_seek_snap = true;
+                    pipeline.seek(target, self.current_seek_gen);
                 }
                 PlayerAction::None => {}
             }
@@ -359,17 +440,15 @@ impl App {
         current_pts: f64,
         writer: &mut W,
     ) -> Result<()> {
-        if !self.osd_state.visible {
-            return Ok(());
-        }
-
         self.osd_state.current_secs = current_pts;
         self.osd_state.fps = self.clock.fps();
         self.osd_state.dropped_frames = self.clock.dropped_frames();
         self.osd_state.mode = self.render_engine.current_mode();
 
-        let bar_text = render_osd_bar(&self.osd_state, term_w);
-        write!(writer, "\x1b[{term_h};1H\x1b[7m{bar_text}\x1b[0m")?;
+        if let Some(content) = self.osd_state.render(term_w, term_h) {
+            write!(writer, "{content}")?;
+        }
+
         Ok(())
     }
 }

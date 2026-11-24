@@ -5,4 +5,4 @@ pub mod osd;
 
 pub use event::{drain_actions, PlayerAction};
 pub use guard::TerminalGuard;
-pub use osd::{render_osd_bar, OsdState};
+pub use osd::OsdState;

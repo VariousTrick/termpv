@@ -17,7 +17,7 @@ use std::time::Duration;
 /// 管线内部控制指令
 #[derive(Debug, Clone, Copy)]
 enum PipelineCmd {
-    Seek(f64),
+    Seek(f64, u64),
     SetResolution(u32, u32),
     Stop,
 }
@@ -30,7 +30,7 @@ pub struct PlaybackPipeline {
     audio_player: Option<Arc<AudioPlayer>>,
 
     // 线程安全队列与状态
-    frame_queue: Arc<(Mutex<VecDeque<RgbFrame>>, Condvar)>,
+    frame_queue: Arc<(Mutex<VecDeque<(u64, RgbFrame)>>, Condvar)>,
     target_res: Arc<Mutex<(u32, u32)>>,
     is_eof: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
@@ -93,15 +93,20 @@ impl PlaybackPipeline {
         let source_h = video_decoder.source_height();
 
         // 3. 构建线程间通信通道与共享环形缓冲
-        // 视频数据包通道（有界容量 30，实现天然背压）
-        let (video_packet_tx, video_packet_rx): (SyncSender<Option<Packet>>, Receiver<Option<Packet>>) =
-            mpsc::sync_channel(30);
+        // 视频数据包通道（包含 seek generation 代数，有界容量 30，实现天然背压）
+        let (video_packet_tx, video_packet_rx): (
+            SyncSender<(u64, Option<Packet>)>,
+            Receiver<(u64, Option<Packet>)>,
+        ) = mpsc::sync_channel(30);
 
         let (demux_cmd_tx, demux_cmd_rx) = mpsc::channel();
         let (video_cmd_tx, video_cmd_rx) = mpsc::channel();
 
-        // 解码完成的 RGB 帧环形缓冲队列（最大 12 帧，防突发卡顿）
-        let frame_queue = Arc::new((Mutex::new(VecDeque::with_capacity(16)), Condvar::new()));
+        // 解码完成的 RGB 帧环形缓冲队列（存储 (generation, RgbFrame)，最大 12 帧，防突发卡顿）
+        let frame_queue = Arc::new((
+            Mutex::new(VecDeque::<(u64, RgbFrame)>::with_capacity(16)),
+            Condvar::new(),
+        ));
         let target_res = Arc::new(Mutex::new((source_w, source_h)));
         let is_eof = Arc::new(AtomicBool::new(false));
         let running = Arc::new(AtomicBool::new(true));
@@ -173,22 +178,28 @@ impl PlaybackPipeline {
         mut demuxer: Demuxer,
         mut audio_decoder: Option<AudioDecoder>,
         audio_player: Option<Arc<AudioPlayer>>,
-        video_packet_tx: SyncSender<Option<Packet>>,
+        video_packet_tx: SyncSender<(u64, Option<Packet>)>,
         cmd_rx: Receiver<PipelineCmd>,
         running: Arc<AtomicBool>,
         is_eof: Arc<AtomicBool>,
         loop_playback: bool,
     ) {
+        let audio_time_base = demuxer.audio_time_base();
+        let mut current_gen = 0u64;
+        let mut pending_first_audio = false;
+
         while running.load(Ordering::Relaxed) {
             // 1. 处理控制指令（如 Seek、Stop）
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
-                    PipelineCmd::Seek(pts) => {
+                    PipelineCmd::Seek(pts, generation) => {
                         let _ = demuxer.seek(pts);
                         is_eof.store(false, Ordering::SeqCst);
                         if let Some(audio_dec) = &mut audio_decoder {
                             audio_dec.flush();
                         }
+                        current_gen = generation;
+                        pending_first_audio = true;
                     }
                     PipelineCmd::Stop => {
                         running.store(false, Ordering::Relaxed);
@@ -204,13 +215,21 @@ impl PlaybackPipeline {
                     // 音频数据包即刻解码为 PCM，推入声卡水库，实现零延迟出声
                     if let (Some(audio_dec), Some(player)) = (&mut audio_decoder, &audio_player) {
                         if let Ok(samples) = audio_dec.decode_packet(&packet) {
+                            if pending_first_audio {
+                                let pts = packet
+                                    .pts()
+                                    .map(|p| (p as f64) * audio_time_base)
+                                    .unwrap_or(0.0);
+                                player.seek_to(pts);
+                                pending_first_audio = false;
+                            }
                             player.push_samples(&samples);
                         }
                     }
                 }
                 Some((StreamKind::Video, packet)) => {
-                    // 投递给视频解码线程（若队列满自动阻塞，自然反压）
-                    if video_packet_tx.send(Some(packet)).is_err() {
+                    // 附带当前代数投递给视频解码线程（若队列满自动阻塞，自然反压）
+                    if video_packet_tx.send((current_gen, Some(packet))).is_err() {
                         break;
                     }
                 }
@@ -222,11 +241,12 @@ impl PlaybackPipeline {
                         if let Some(player) = &audio_player {
                             player.seek_to(0.0);
                         }
+                        pending_first_audio = true;
                         continue;
                     }
 
                     is_eof.store(true, Ordering::Relaxed);
-                    let _ = video_packet_tx.send(None);
+                    let _ = video_packet_tx.send((current_gen, None));
                     thread::sleep(Duration::from_millis(15));
                 }
             }
@@ -236,19 +256,22 @@ impl PlaybackPipeline {
     /// 视频解码与色彩转换工作循环（高优先级并行解码器）
     fn video_worker_loop(
         mut decoder: VideoDecoder,
-        packet_rx: Receiver<Option<Packet>>,
+        packet_rx: Receiver<(u64, Option<Packet>)>,
         cmd_rx: Receiver<PipelineCmd>,
-        frame_queue: Arc<(Mutex<VecDeque<RgbFrame>>, Condvar)>,
+        frame_queue: Arc<(Mutex<VecDeque<(u64, RgbFrame)>>, Condvar)>,
         target_res: Arc<Mutex<(u32, u32)>>,
         running: Arc<AtomicBool>,
     ) {
+        let mut current_gen = 0u64;
+
         while running.load(Ordering::Relaxed) {
             // 1. 处理控制指令
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
-                    PipelineCmd::Seek(_) => {
+                    PipelineCmd::Seek(_, generation) => {
+                        current_gen = generation;
                         decoder.flush();
-                        // 彻底排空 packet_rx 中可能积压的旧数据包或 EOF 哨兵，防止解码脏包
+                        // 彻底排空 packet_rx 中可能积压的旧代数据包或 EOF 哨兵，防止解码脏包
                         while let Ok(_) = packet_rx.try_recv() {}
                         let (lock, cvar) = &*frame_queue;
                         let mut q = lock.lock().unwrap();
@@ -278,14 +301,21 @@ impl PlaybackPipeline {
             }
 
             // 3. 接收媒体包并解码
-            let packet_opt = match packet_rx.recv_timeout(Duration::from_millis(15)) {
-                Ok(p) => p,
+            let (pkt_gen, packet_opt) = match packet_rx.recv_timeout(Duration::from_millis(15)) {
+                Ok(item) => item,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
 
+            // 若接收到的数据包早于当前 Seek 代数，立即丢弃，零 CPU 解码浪费！
+            if pkt_gen < current_gen {
+                continue;
+            }
+
             let frames = match packet_opt {
-                Some(packet) => decoder.decode_packet(&packet, target_w, target_h).unwrap_or_default(),
+                Some(packet) => decoder
+                    .decode_packet(&packet, target_w, target_h)
+                    .unwrap_or_default(),
                 None => {
                     decoder.flush();
                     Vec::new()
@@ -310,7 +340,7 @@ impl PlaybackPipeline {
                         return;
                     }
                 }
-                q.push_back(frame);
+                q.push_back((pkt_gen, frame));
                 cvar.notify_all();
             }
         }
@@ -318,7 +348,7 @@ impl PlaybackPipeline {
 
     /// 从预解码环形队列弹出一帧（耗时 0ms，主线程零负担）
     #[allow(dead_code)]
-    pub fn pop_video_frame(&self) -> Option<RgbFrame> {
+    pub fn pop_video_frame(&self) -> Option<(u64, RgbFrame)> {
         let (lock, cvar) = &*self.frame_queue;
         let mut q = lock.lock().unwrap();
         let frame = q.pop_front();
@@ -329,7 +359,7 @@ impl PlaybackPipeline {
     }
 
     /// 从预解码环形队列弹出一帧，若暂时为空则微等待超时
-    pub fn pop_video_frame_timeout(&self, timeout: Duration) -> Option<RgbFrame> {
+    pub fn pop_video_frame_timeout(&self, timeout: Duration) -> Option<(u64, RgbFrame)> {
         let (lock, cvar) = &*self.frame_queue;
         let mut q = lock.lock().unwrap();
         if q.is_empty() {
@@ -371,17 +401,14 @@ impl PlaybackPipeline {
         cvar.notify_all();
     }
 
-    /// 执行 Seek 快进/快退
-    pub fn seek(&self, target_secs: f64) {
+    /// 执行 Seek 快进/快退（带 Seek 代数标记）
+    pub fn seek(&self, target_secs: f64, generation: u64) {
         let target = target_secs.clamp(0.0, self.duration_secs);
         // 主线程发起 Seek 时第一时间原子重置 EOF 状态，杜绝主渲染循环在换流真空期误判退出
         self.is_eof.store(false, Ordering::SeqCst);
-        if let Some(player) = &self.audio_player {
-            player.seek_to(target);
-        }
 
-        let _ = self.demux_cmd_tx.send(PipelineCmd::Seek(target));
-        let _ = self.video_cmd_tx.send(PipelineCmd::Seek(target));
+        let _ = self.demux_cmd_tx.send(PipelineCmd::Seek(target, generation));
+        let _ = self.video_cmd_tx.send(PipelineCmd::Seek(target, generation));
 
         let (lock, cvar) = &*self.frame_queue;
         let mut q = lock.lock().unwrap();

@@ -74,7 +74,7 @@ impl KittyRenderer {
             if is_first {
                 write!(
                     writer,
-                    "\x1b_Ga=T,f=24,s={img_w},v={img_h},c={render_cols},r={render_rows},C=1,q=2,m={m_flag};"
+                    "\x1b_Ga=T,f=24,s={img_w},v={img_h},c={render_cols},r={render_rows},z=-1,C=1,q=2,m={m_flag};"
                 )?;
                 is_first = false;
             } else {

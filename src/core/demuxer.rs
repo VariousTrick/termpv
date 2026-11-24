@@ -70,6 +70,17 @@ impl Demuxer {
         self.input_ctx.stream(idx)
     }
 
+    /// 获取视频流时间基准（用于计算数据包绝对 PTS）
+    #[allow(dead_code)]
+    pub fn video_time_base(&self) -> f64 {
+        self.video_stream().map(|s| f64::from(s.time_base())).unwrap_or(0.0)
+    }
+
+    /// 获取音频流时间基准（用于计算数据包绝对 PTS）
+    pub fn audio_time_base(&self) -> f64 {
+        self.audio_stream().map(|s| f64::from(s.time_base())).unwrap_or(0.0)
+    }
+
     /// 读取下一个数据包并标识其所属流类型
     pub fn read_packet(&mut self) -> Option<(StreamKind, Packet)> {
         let mut packet = Packet::empty();
@@ -98,3 +109,5 @@ impl Demuxer {
         Ok(())
     }
 }
+
+
