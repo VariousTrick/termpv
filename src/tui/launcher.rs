@@ -8,6 +8,16 @@ use std::fs;
 use std::io::{stdout, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+/// 保证在终端 Raw Mode 下严格回车 + 换行并清除残余字符
+macro_rules! wln {
+    ($dst:expr) => {
+        write!($dst, "\x1b[2K\r\n")
+    };
+    ($dst:expr, $($arg:tt)*) => {
+        write!($dst, "\x1b[2K{}\r\n", format_args!($($arg)*))
+    };
+}
+
 /// 支持的常见媒体扩展名
 const MEDIA_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "wmv", "mp3", "flac", "wav", "aac",
@@ -73,6 +83,10 @@ impl Launcher {
     pub fn run(&mut self) -> Result<Option<LaunchTarget>> {
         let _guard = TerminalGuard::new()?;
         let mut out = BufWriter::with_capacity(32 * 1024, stdout());
+
+        // 确保恢复自动换行，并定位到屏幕首行
+        write!(out, "\x1b[?7h\x1b[2J\x1b[H")?;
+        out.flush()?;
 
         loop {
             let (term_w, term_h) = terminal::size()?;
@@ -369,6 +383,7 @@ impl Launcher {
     }
 
     fn render<W: Write>(&self, out: &mut W, term_w: u16, term_h: u16) -> Result<()> {
+        // 全屏清除并定位到屏幕左上角
         write!(out, "\x1b[2J\x1b[H")?;
 
         match &self.screen {
@@ -395,6 +410,9 @@ impl Launcher {
             }
         }
 
+        // 清除下方剩余未被覆盖的旧屏幕内容
+        write!(out, "\x1b[J")?;
+
         Ok(())
     }
 
@@ -414,24 +432,31 @@ impl Launcher {
             r"     ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝       ╚═══╝  ",
         ];
 
-        writeln!(out)?;
-        for line in &logo {
-            writeln!(out, "\x1b[38;2;0;215;215;1m{line}\x1b[0m")?;
+        wln!(out)?;
+        if term_w >= 60 {
+            for line in &logo {
+                wln!(out, "\x1b[38;2;0;215;215;1m{line}\x1b[0m")?;
+            }
+            wln!(
+                out,
+                "\x1b[38;2;246;193;119m       高性能现代化终端媒体播放器 (termpv v0.3.5)\x1b[0m"
+            )?;
+        } else {
+            wln!(
+                out,
+                "  \x1b[38;2;0;215;215;1m▶ termpv\x1b[0m \x1b[38;2;246;193;119m(v0.3.5)\x1b[0m \x1b[38;2;140;150;170m- 终端极速媒体播放器\x1b[0m"
+            )?;
         }
-
-        writeln!(
-            out,
-            "\x1b[38;2;246;193;119m       高性能现代化终端媒体播放器 (termpv v0.3.5)\x1b[0m\n"
-        )?;
+        wln!(out)?;
 
         let options = [
             (
                 "🌐  播放网络流媒体",
-                "支持 HTTP / HTTPS / PikPak 网页直链 / RTSP 流媒体等",
+                "支持 HTTP / HTTPS / PikPak 直链 / RTSP 等",
             ),
             (
                 "📁  浏览本地媒体文件",
-                "方向键交互式选择本地目录视频/音频并一键直放",
+                "方向键交互式选择本地目录视频/音频并播放",
             ),
             (
                 "🕒  最近播放历史记录",
@@ -443,36 +468,37 @@ impl Launcher {
             ),
         ];
 
-        writeln!(
+        wln!(
             out,
-            "\x1b[38;2;140;150;170m  请使用方向键选择操作，按 Enter 确认：\x1b[0m\n"
+            "  \x1b[38;2;140;150;170m请使用方向键选择操作，按 Enter 确认：\x1b[0m"
         )?;
+        wln!(out)?;
 
         for (i, (title, desc)) in options.iter().enumerate() {
             if i == selected {
-                writeln!(
+                wln!(
                     out,
-                    "  \x1b[48;2;0;100;140;38;2;255;255;255;1m ▶ [{}] {:<24} \x1b[0m  \x1b[38;2;180;210;235m{}\x1b[0m",
+                    "  \x1b[48;2;0;100;140;38;2;255;255;255;1m ▶ [{}] {:<22} \x1b[0m  \x1b[38;2;180;210;235m{}\x1b[0m",
                     i + 1,
                     title,
                     desc
                 )?;
             } else {
-                writeln!(
+                wln!(
                     out,
-                    "    \x1b[38;2;200;210;220m[{}] {:<24}\x1b[0m  \x1b[38;2;110;120;140m{}\x1b[0m",
+                    "    \x1b[38;2;200;210;220m[{}] {:<22}\x1b[0m  \x1b[38;2;110;120;140m{}\x1b[0m",
                     i + 1,
                     title,
                     desc
                 )?;
             }
-            writeln!(out)?;
+            wln!(out)?;
         }
 
-        let sep_len = (term_w as usize).clamp(40, 72);
+        let sep_len = (term_w as usize).clamp(35, 70);
         let sep: String = "─".repeat(sep_len);
-        writeln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
-        writeln!(
+        wln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
+        wln!(
             out,
             "  \x1b[38;2;130;140;160m快捷操作: [↑/↓ 或 j/k] 选择  [Enter] 确认  [1-4] 快捷跳转  [q/Esc] 退出\x1b[0m"
         )?;
@@ -487,20 +513,21 @@ impl Launcher {
         err_msg: Option<&str>,
         term_w: u16,
     ) -> Result<()> {
-        writeln!(out)?;
-        writeln!(
+        wln!(out)?;
+        wln!(
             out,
             "  \x1b[38;2;0;215;215;1m🌐 播放网络流媒体\x1b[0m"
         )?;
-        writeln!(
+        wln!(
             out,
-            "  \x1b[38;2;140;150;170m请输入或直接粘贴媒体流链接（支持 PikPak、HTTP(S)、RTSP 等）：\x1b[0m\n"
+            "  \x1b[38;2;140;150;170m请输入或直接粘贴媒体流链接（支持 PikPak、HTTP(S)、RTSP 等）：\x1b[0m"
         )?;
+        wln!(out)?;
 
-        let box_w = (term_w as usize).saturating_sub(6).clamp(30, 90);
+        let box_w = (term_w as usize).saturating_sub(6).clamp(30, 85);
         let h_line: String = "─".repeat(box_w);
 
-        writeln!(out, "  \x1b[38;2;90;140;175m┌{}┐\x1b[0m", h_line)?;
+        wln!(out, "  \x1b[38;2;90;140;175m┌{}┐\x1b[0m", h_line)?;
 
         let inner_w = box_w.saturating_sub(4);
         let display_input = if input.chars().count() > inner_w {
@@ -510,20 +537,22 @@ impl Launcher {
             input.to_string()
         };
 
-        writeln!(
+        wln!(
             out,
             "  \x1b[38;2;90;140;175m│\x1b[0m  \x1b[38;2;255;255;255;1m{:<inner_w$}\x1b[38;2;0;215;215;5m█\x1b[0m \x1b[38;2;90;140;175m│\x1b[0m",
             display_input,
             inner_w = inner_w
         )?;
 
-        writeln!(out, "  \x1b[38;2;90;140;175m└{}┘\x1b[0m\n", h_line)?;
+        wln!(out, "  \x1b[38;2;90;140;175m└{}┘\x1b[0m", h_line)?;
+        wln!(out)?;
 
         if let Some(err) = err_msg {
-            writeln!(out, "  \x1b[38;2;255;85;85;1m⚠ {err}\x1b[0m\n")?;
+            wln!(out, "  \x1b[38;2;255;85;85;1m⚠ {err}\x1b[0m")?;
+            wln!(out)?;
         }
 
-        writeln!(
+        wln!(
             out,
             "  \x1b[38;2;130;140;160m[Enter] 开始解析播放   [Ctrl+U] 清空输入   [Esc] 返回主菜单\x1b[0m"
         )?;
@@ -541,39 +570,41 @@ impl Launcher {
         term_w: u16,
         term_h: u16,
     ) -> Result<()> {
-        writeln!(out)?;
-        writeln!(
+        wln!(out)?;
+        wln!(
             out,
             "  \x1b[38;2;0;215;215;1m📁 本地媒体文件浏览器\x1b[0m"
         )?;
-        writeln!(
+        wln!(
             out,
-            "  \x1b[38;2;140;150;170m当前路径: \x1b[38;2;246;193;119;1m{}\x1b[0m\n",
+            "  \x1b[38;2;140;150;170m当前路径: \x1b[38;2;246;193;119;1m{}\x1b[0m",
             current_dir.display()
         )?;
+        wln!(out)?;
 
-        let visible_lines = (term_h as usize).saturating_sub(10).clamp(6, 16);
+        let visible_lines = (term_h as usize).saturating_sub(10).clamp(5, 15);
         let end = (scroll + visible_lines).min(entries.len());
 
         if entries.is_empty() {
-            writeln!(
+            wln!(
                 out,
-                "  \x1b[38;2;130;140;160m(当前目录下未发现支持的视频/音频媒体文件)\x1b[0m\n"
+                "  \x1b[38;2;130;140;160m(当前目录下未发现支持的视频/音频媒体文件)\x1b[0m"
             )?;
+            wln!(out)?;
         } else {
             for i in scroll..end {
                 let item = &entries[i];
                 let is_sel = i == selected;
 
                 let icon = if item.is_parent {
-                    "📁 .."
+                    "📁"
                 } else if item.is_dir {
                     "📁"
                 } else {
                     "🎬"
                 };
 
-                let max_name_w = (term_w as usize).saturating_sub(30).clamp(20, 60);
+                let max_name_w = (term_w as usize).saturating_sub(26).clamp(16, 50);
                 let name_truncated = if item.name.chars().count() > max_name_w {
                     format!("{}...", item.name.chars().take(max_name_w - 3).collect::<String>())
                 } else {
@@ -581,9 +612,9 @@ impl Launcher {
                 };
 
                 if is_sel {
-                    writeln!(
+                    wln!(
                         out,
-                        "  \x1b[48;2;0;100;140;38;2;255;255;255;1m ▶ {} {:<max_name_w$} \x1b[0m \x1b[38;2;246;193;119m{:>10}\x1b[0m",
+                        "  \x1b[48;2;0;100;140;38;2;255;255;255;1m ▶ {} {:<max_name_w$} \x1b[0m \x1b[38;2;246;193;119m{:>8}\x1b[0m",
                         icon,
                         name_truncated,
                         item.size_str,
@@ -595,9 +626,9 @@ impl Launcher {
                     } else {
                         "\x1b[38;2;220;225;235m"
                     };
-                    writeln!(
+                    wln!(
                         out,
-                        "     {} {}{:<max_name_w$}\x1b[0m \x1b[38;2;130;140;155m{:>10}\x1b[0m",
+                        "     {} {}{:<max_name_w$}\x1b[0m \x1b[38;2;130;140;155m{:>8}\x1b[0m",
                         icon,
                         color,
                         name_truncated,
@@ -608,11 +639,11 @@ impl Launcher {
             }
         }
 
-        writeln!(out)?;
-        let sep_len = (term_w as usize).clamp(40, 72);
+        wln!(out)?;
+        let sep_len = (term_w as usize).clamp(35, 70);
         let sep: String = "─".repeat(sep_len);
-        writeln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
-        writeln!(
+        wln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
+        wln!(
             out,
             "  \x1b[38;2;130;140;160m[↑/↓] 选择   [Enter] 打开目录/播放   [Backspace/←] 返回上级   [Esc] 返回菜单\x1b[0m"
         )?;
@@ -629,23 +660,25 @@ impl Launcher {
         term_w: u16,
         term_h: u16,
     ) -> Result<()> {
-        writeln!(out)?;
-        writeln!(
+        wln!(out)?;
+        wln!(
             out,
             "  \x1b[38;2;0;215;215;1m🕒 最近播放历史记录\x1b[0m"
         )?;
-        writeln!(
+        wln!(
             out,
-            "  \x1b[38;2;140;150;170m选择历史条目按 Enter 即可以上次的断点进度继续播放：\x1b[0m\n"
+            "  \x1b[38;2;140;150;170m选择历史条目按 Enter 即可以上次的断点进度继续播放：\x1b[0m"
         )?;
+        wln!(out)?;
 
         if items.is_empty() {
-            writeln!(
+            wln!(
                 out,
-                "  \x1b[38;2;130;140;160m(暂无播放历史记录，播放本地文件或网络视频后将自动保存)\x1b[0m\n"
+                "  \x1b[38;2;130;140;160m(暂无播放历史记录，播放本地文件或网络视频后将自动保存)\x1b[0m"
             )?;
+            wln!(out)?;
         } else {
-            let visible_items = (term_h as usize).saturating_sub(11).clamp(3, 8);
+            let visible_items = (term_h as usize).saturating_sub(11).clamp(2, 6);
             let end = (scroll + visible_items).min(items.len());
 
             for i in scroll..end {
@@ -658,7 +691,7 @@ impl Launcher {
                     "🎬"
                 };
 
-                let max_title_w = (term_w as usize).saturating_sub(20).clamp(25, 65);
+                let max_title_w = (term_w as usize).saturating_sub(18).clamp(20, 55);
                 let title_truncated = if item.title.chars().count() > max_title_w {
                     format!("{}...", item.title.chars().take(max_title_w - 3).collect::<String>())
                 } else {
@@ -671,14 +704,14 @@ impl Launcher {
                 let rel_time = item.format_relative_time();
 
                 if is_sel {
-                    writeln!(
+                    wln!(
                         out,
                         "  \x1b[48;2;0;100;140;38;2;255;255;255;1m ▶ [{}] {} {} \x1b[0m",
                         i + 1,
                         icon,
                         title_truncated
                     )?;
-                    writeln!(
+                    wln!(
                         out,
                         "      \x1b[38;2;246;193;119m进度: [{} / {}] ({:.0}%)  •  {}\x1b[0m",
                         pts_str,
@@ -687,14 +720,14 @@ impl Launcher {
                         rel_time
                     )?;
                 } else {
-                    writeln!(
+                    wln!(
                         out,
                         "     [{}] {} \x1b[38;2;220;225;235;1m{}\x1b[0m",
                         i + 1,
                         icon,
                         title_truncated
                     )?;
-                    writeln!(
+                    wln!(
                         out,
                         "      \x1b[38;2;120;130;150m进度: [{} / {}] ({:.0}%)  •  {}\x1b[0m",
                         pts_str,
@@ -703,14 +736,14 @@ impl Launcher {
                         rel_time
                     )?;
                 }
-                writeln!(out)?;
+                wln!(out)?;
             }
         }
 
-        let sep_len = (term_w as usize).clamp(40, 72);
+        let sep_len = (term_w as usize).clamp(35, 70);
         let sep: String = "─".repeat(sep_len);
-        writeln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
-        writeln!(
+        wln!(out, "  \x1b[38;2;80;90;110m{sep}\x1b[0m")?;
+        wln!(
             out,
             "  \x1b[38;2;130;140;160m[Enter] 断点续播   [d] 删除此项   [c] 清空历史   [Esc] 返回主菜单\x1b[0m"
         )?;
