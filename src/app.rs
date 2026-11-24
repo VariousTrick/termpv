@@ -73,7 +73,7 @@ impl App {
                 self.current_seek_gen += 1;
                 self.pending_seek_snap = true;
                 self.clock.seek_to(target);
-                pipeline.seek(target, self.current_seek_gen);
+                pipeline.seek(target, self.current_seek_gen, 0.0);
             }
         }
 
@@ -450,7 +450,10 @@ impl App {
                     self.current_seek_gen += 1;
                     self.pending_seek_snap = true;
                     self.clock.seek_to(target);
-                    pipeline.seek(target, self.current_seek_gen);
+                    let hit_cache = pipeline.seek(target, self.current_seek_gen, current);
+                    if hit_cache {
+                        log::info!("快进命中 500MB 内存缓存，执行零延迟纯内存跳转至 {:.2}s", target);
+                    }
                 }
                 PlayerAction::None => {}
             }
